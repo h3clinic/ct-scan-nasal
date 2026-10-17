@@ -2,20 +2,22 @@
 
 > **Research only. Not medical advice.** Nothing here is validated for clinical use. The geometry is idealized and synthetic, not derived from patient scans.
 
-A prototype for evaluating nasal airway obstruction. It builds parametric airway geometries, estimates airflow resistance by region, and (planned) wraps the tools in a small-model agent loop that explains a recommendation. Every language model stays at or under 33B parameters. Physics and decision rules are plain code, never a language model, so every number traces back to a formula or a simulation.
+A prototype for evaluating nasal airway obstruction. It builds parametric airway geometries, estimates airflow resistance by region, and wraps the tools in a small-model agent loop that explains the results. Every language model stays at or under 33B parameters. Physics and decision rules are plain code, never a language model, so every number traces back to a formula or a simulation.
 
 ## Design
 
-### Agents (small language models, planned)
+### Agents (small language models)
 
-| Agent | Size | Job |
-| --- | --- | --- |
-| Planner | ~14B | Reads the request and decides which tools to call, in what order |
-| Case | 7B to 14B | Turns a description or measurements into geometry parameters |
-| Critic | ~8B | Flags out-of-range inputs, disagreement between rules, and risk flags before anything is shown |
-| Explainer | ~14B | Writes the plain-language recommendation from the numbers it is given; never invents numbers |
+All four agents run on one served model, [NVIDIA Nemotron 3.5 Lightning 30B-A3B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4) (NVFP4). It has **30B total parameters and 3B active per token**, so it meets the 33B limit. Each agent has its own instructions and may call only its own tools.
 
-The agent count stays at four: more agents mostly add latency and failure points.
+| Agent | Model | Tools it may call | Job |
+| --- | --- | --- | --- |
+| Case | Nemotron 3.5 Lightning 30B-A3B | `set_case` | Turns a description into the three case parameters; code validates them and returns errors for the model to fix |
+| Planner | Nemotron 3.5 Lightning 30B-A3B | `predict_resistance`, `formula_resistance`, `what_if`, `finish` | Decides which physics tools answer the request |
+| Critic | Nemotron 3.5 Lightning 30B-A3B | `review_results`, `check_parameters`, `report_flags` | Runs the code checks and picks which flags to show; it can cite only flag ids the checks produced |
+| Explainer | Nemotron 3.5 Lightning 30B-A3B | none | Writes the plain-language summary; code rejects any number not in the tool results and retries once, then falls back to a template written by code |
+
+The agent count stays at four: more agents mostly add latency and failure points. The decision rules in `nasal.decision` are unreviewed placeholders and are not wired into the agents, so the agents explain resistance and what-if changes but never recommend treatment.
 
 ### Tools (plain code, not language models)
 
@@ -26,18 +28,18 @@ The agent count stays at four: more agents mostly add latency and failure points
 | Case generation | Python + pandas | **Done**: `nasal.cases`, `nasal-generate` |
 | Meshing | gmsh (Python API) | **Done**: `nasal.simulate.mesh_side` |
 | Airflow ground truth | OpenFOAM v2606 (`opencfd/openfoam-run:2606` in Docker), simpleFoam | **Done**: `nasal.simulate`, `nasal-simulate` |
-| Fast stand-in model | PyTorch, or NVIDIA PhysicsNeMo | Planned |
+| Fast stand-in model | PyTorch MLP | **Done**: `nasal.surrogate`, `nasal-surrogate` |
 | Decision rules (standard and improved) | Plain Python functions | **Prototype**: `nasal.decision`, thresholds are placeholders pending ENT review |
-| Comparison and logging | pandas + JSON agent log | Planned |
+| Comparison and logging | pandas + JSON agent log | **Done**: `nasal-agents --log` |
 | Demo | Streamlit or Gradio with PyVista or Plotly | Planned |
-| Model serving | vLLM or TensorRT-LLM (OpenAI-style endpoint) | Planned |
+| Model serving | vLLM `v0.27.1` on NVIDIA Brev (1x H100), OpenAI-style endpoint | **Done**: see Agents usage |
 
 ## Workflow
 
 1. **Generate cases**: the geometry tool makes a few hundred synthetic patients with known parameters. *(done)*
 2. **Simulate**: mesh each shape and run OpenFOAM for resistance by region. This takes the longest, so it starts first. *(done for a subset; see below)*
-3. **Train the fast model** on the simulation results, recording its error and speedup.
-4. **Wire up the agents**: the Planner receives the case, the Case agent sets parameters, and the Planner calls the fast model and both decision rules. The Critic checks the results and the Explainer writes the recommendation.
+3. **Train the fast model** on the simulation results, recording its error and speedup. *(done; see Fast surrogate)*
+4. **Wire up the agents**: the Case agent sets parameters, the Planner calls the fast model, the formula and what-if tools, the Critic checks the results and the Explainer writes the summary. *(done; the placeholder decision rules are not wired in yet)*
 5. **Verify with real simulation**: for a sample of cases, run virtual surgery in OpenFOAM and compare both rules' plans against it. This produces the results table.
 6. **Demo**: sliders change the anatomy, the resistance map updates, and agent steps appear live with surrogate error and speed.
 7. **Doctor's check**: at least one ENT review of the rules, plus the research-only label.
@@ -76,7 +78,7 @@ Each area-change loss counts toward the narrower of the two regions, because tha
 - **Mesh:** gmsh lofts the same elliptical cross-sections as `nasal.geometry` and fills the tube with tetrahedra sized to the local tube width (6 across the narrow axis by default, about 60k to 120k cells per side). Patches are `inlet` (nostril), `outlet` (choana) and `wall`.
 - **Solver:** OpenFOAM v2606 `simpleFoam` in the `opencfd/openfoam-run:2606` Docker image. The inlet total pressure ramps from 0 to 150 Pa over the first 300 iterations, and the outlet static pressure is 0. At 150 Pa the valve Reynolds number is around 10⁴, so the default model is k-omega SST with wall functions; `--turbulence laminar` is also available.
 - **Region drops:** flux-weighted total pressure on planes at the region boundaries, whose x positions come from `REGION_LENGTH`. Region resistances are losses and sum to the side resistance. The choana value includes the kinetic energy leaving the outlet.
-- **Output:** the same column names and units as `nasal.resistance.evaluate`, plus `{side}_cells`, `{side}_iterations`, `{side}_converged` and `{side}_unsteadiness`.
+- **Output:** the same column names and units as `nasal.resistance.evaluate`, plus `{side}_cells`, `{side}_iterations`, `{side}_converged`, `{side}_unsteadiness` and `{side}_seconds` (wall-clock time to mesh and solve that side).
 
 Residuals plateau instead of converging, because the valve jet is mildly unsteady. When the solver reaches 3000 iterations without meeting its residual targets (`converged` is false), the flow and plane fields are averaged over the last 300 iterations. `unsteadiness` is the flow's standard deviation over that window divided by its mean. It was at most 2% in the runs below.
 
@@ -104,6 +106,21 @@ No constants have been fitted yet.
 
 **Mesh sensitivity:** for the nominal left side, refining from 69k to 216k cells (`--cells-across 9`) changed the side resistance by 5% (0.116 to 0.122). The region split moved more: valve resistance fell by a third. Treat region values as approximate. For the narrowest side tested (case_0199 left), k-omega SST and laminar runs agreed within 1%.
 
+**Run-to-run scatter:** gmsh's 3D mesher is not deterministic, so rerunning a case gives a slightly different mesh. Rerunning case_0269's left side (narrow valve, the least steady flow) changed its flow by 11% (407 to 453 cm³/s). Expect several percent of noise in single cases, more on narrow sides.
+
+## Fast surrogate
+
+`nasal.surrogate` is a small PyTorch network: 3 inputs, two hidden layers of 64, and 4 outputs, one log resistance per region. One network serves both sides, because the sides are mirror images; a side's input is how far the septum bends toward it. It was trained on the 90 cases simulated so far: the nominal case, five extremes outside the first 100 and 84 of the first 100 cases in `cases.csv` (seed 0). Every number below is cross-validated (5-fold): each case is predicted by a network that never saw it.
+
+| Mean absolute error vs OpenFOAM | Surrogate | Formula baseline |
+| --- | --- | --- |
+| Total resistance | 7.8% | 23.1% |
+| Side resistance | 9.2% | 23.4% |
+| Region resistance | 27.2% | 209% |
+
+- **Speed:** a prediction takes 0.15 ms on a laptop CPU. The median OpenFOAM case took 15 minutes of wall-clock time (both sides, 4 cores each), so the surrogate is about 6 million times faster.
+- **Weak spots:** the worst side is off by 74% and region values remain rough (see the mesh notes above). The agents' Critic flags large disagreements between the surrogate and the formula.
+
 ## Usage
 
 ```bash
@@ -125,6 +142,39 @@ nasal-simulate --ids case_0003 --cells-across 9 --turbulence laminar
 ```
 
 `data/simulated.csv` has one row per simulated case with the same columns as `cases.csv`, plus `turbulence` and the solver checks. OpenFOAM case folders and logs go to `data/sim/<case_id>/<side>/`. Each side takes about 3 to 5 minutes on 8 cores. The command ends by printing simulated / formula ratios for every column. Tests that need OpenFOAM are skipped when Docker is not available, and the mesh tests are skipped without gmsh.
+
+To use more cores, run several batches at once with separate `--out` files and train on all of them. Keep the total of `--procs` across batches at or below the number of physical cores. The runs call `mpirun --bind-to none`: by default each container pins its processes to the same first cores, which made parallel batches about ten times slower.
+
+The surrogate needs PyTorch:
+
+```bash
+pip install -e ".[dev,surrogate]"
+nasal-surrogate --sim data/simulated.csv data/simulated_A.csv data/simulated_B.csv
+```
+
+It merges the files by `case_id`, prints the cross-validated error and speedup, and writes `data/surrogate.pt` and `data/surrogate_report.json`. Its tests are skipped without PyTorch.
+
+### Agents
+
+Serve the model on a GPU machine. We used an NVIDIA Brev `scaleway_H100` instance with the flags from the model card's H100 recipe, minus speculative decoding:
+
+```bash
+docker run -d --name nemotron --gpus all --ipc=host -p 8000:8000 \
+  -v ~/.cache/huggingface:/root/.cache/huggingface vllm/vllm-openai:v0.27.1 \
+  --model nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 --served-model-name nemotron \
+  --max-model-len 65536 --max-num-seqs 64 --enable-prefix-caching --async-scheduling \
+  --mamba-backend flashinfer --mamba-ssm-cache-dtype float16 --mamba-cache-mode align \
+  --reasoning-parser nemotron_v3 --tool-call-parser qwen3_coder --enable-auto-tool-choice
+```
+
+Then forward port 8000 to your machine (for example `ssh -N -L 8000:localhost:8000 <instance>`) and run:
+
+```bash
+pip install -e ".[agents,surrogate]"
+nasal-agents "Narrow valve, maybe 9 degrees, septum bends left. What if the valve were widened to 15 degrees?"
+```
+
+It prints the summary and writes every model turn, tool call, tool result and check to `data/agent_log.json`. `NASAL_LLM_URL` and `NASAL_LLM_MODEL` point it at another OpenAI-compatible server. `--thinking` turns on the model's reasoning mode, which is off by default for speed. The predictions use `data/surrogate.pt` when it exists and the formula otherwise; the Critic flags which one was used. The agent tests use a scripted stand-in for the model and need no server.
 
 ## Surgical decision rules (Workflow++ prototype)
 

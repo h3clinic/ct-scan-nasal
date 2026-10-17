@@ -12,10 +12,14 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 sim = ["gmsh>=4.11"]
+surrogate = ["torch>=2.2"]
+agents = ["openai>=1.40"]
 
 [project.scripts]
 nasal-generate = "nasal.cli:main"
 nasal-simulate = "nasal.cli:simulate_main"
+nasal-surrogate = "nasal.cli:surrogate_main"
+nasal-agents = "nasal.cli:agents_main"
 
 [build-system]
 requires = ["setuptools>=68"]

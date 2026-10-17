@@ -92,5 +92,50 @@ def simulate_main(argv: list[str] | None = None) -> None:
         raise SystemExit(f"failed cases: {', '.join(failed)}")
 
 
+def surrogate_main(argv: list[str] | None = None) -> None:
+    import json
+
+    from . import surrogate as sg
+
+    parser = argparse.ArgumentParser(
+        description="Train the fast surrogate on simulated cases and report its cross-validated error."
+    )
+    parser.add_argument("--sim", type=Path, nargs="+", default=[Path("data/simulated.csv")],
+                        help="simulated.csv files to train on (merged by case_id)")
+    parser.add_argument("--model", type=Path, default=Path("data/surrogate.pt"))
+    parser.add_argument("--report", type=Path, default=Path("data/surrogate_report.json"))
+    parser.add_argument("--folds", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=sg.EPOCHS)
+    args = parser.parse_args(argv)
+
+    table = sg.load_simulated(args.sim)
+    result = sg.report(table, args.folds, args.epochs)
+    sg.Surrogate.fit(table, epochs=args.epochs).save(args.model)
+    sg.write_report(result, args.report)
+    print(json.dumps(result, indent=2))
+    print(f"model: {args.model}, report: {args.report}")
+
+
+def agents_main(argv: list[str] | None = None) -> None:
+    import json
+
+    from . import agents
+
+    parser = argparse.ArgumentParser(
+        description="Run the Case, Planner, Critic and Explainer agents on a description. Research only."
+    )
+    parser.add_argument("request", help='e.g. "narrow nasal valve, septum bent to the left; what if the valve is widened?"')
+    parser.add_argument("--surrogate", type=Path, default=agents.SURROGATE_PATH)
+    parser.add_argument("--log", type=Path, default=Path("data/agent_log.json"))
+    parser.add_argument("--thinking", action="store_true", help="turn on the model's reasoning mode")
+    args = parser.parse_args(argv)
+
+    out = agents.run_pipeline(args.request, surrogate=agents.load_surrogate(args.surrogate), thinking=args.thinking)
+    args.log.parent.mkdir(parents=True, exist_ok=True)
+    args.log.write_text(json.dumps(out, indent=2), encoding="utf-8")
+    print(out["summary"])
+    print(f"\n[{out['summary_source']}; {out['seconds']} s; log: {args.log}]")
+
+
 if __name__ == "__main__":
     main()

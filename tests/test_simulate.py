@@ -22,7 +22,7 @@ def test_case_files_set_reference_pressure_and_planes():
     for i, x in enumerate(sim.region_boundaries(), start=1):
         assert f"x{i} {{ type cuttingPlane; point ({x:.6g} 0 0)" in files["system/controlDict"]
     assert "numberOfSubdomains 4" in files["system/decomposeParDict"]
-    assert "mpirun --allow-run-as-root -np 4 simpleFoam -parallel" in files["Allrun"]
+    assert "mpirun --allow-run-as-root --bind-to none -np 4 simpleFoam -parallel" in files["Allrun"]
     assert f"nu {sim.NU:.6g}" in files["constant/transportProperties"]
 
 

@@ -15,6 +15,7 @@ units (Pa*s/cm^3) as `nasal.resistance.evaluate`, plus solver checks.
 
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import numpy as np
@@ -250,6 +251,9 @@ nu {NU:.6g};
                                 "type nutkWallFunction; value uniform 0;")
     run = [
         "set -e",
+        # The container runs as root; give the files back to the case folder's
+        # owner so the host user can delete or rerun the case on Linux.
+        "trap 'chown -R --reference=. . 2>/dev/null || true' EXIT",
         "gmshToFoam side.msh > log.gmshToFoam",
         "foamDictionary constant/polyMesh/boundary -entry entry0/wall/type -set wall > /dev/null",
         "checkMesh > log.checkMesh || true",
@@ -257,7 +261,9 @@ nu {NU:.6g};
     if processes > 1:
         run += [
             "decomposePar -force > log.decomposePar",
-            f"mpirun --allow-run-as-root -np {processes} simpleFoam -parallel > log.simpleFoam",
+            # No core binding: by default every container pins its ranks to
+            # cores 0..n-1, so parallel batches would all share the same cores.
+            f"mpirun --allow-run-as-root --bind-to none -np {processes} simpleFoam -parallel > log.simpleFoam",
             "rm -rf processor*",
         ]
     else:
@@ -377,7 +383,7 @@ def to_record(sides: dict[str, dict], pressure: float = REFERENCE_PRESSURE) -> d
         for region in REGIONS:
             record[f"{side}_{region}_resistance"] = s["region_resistance"][region]
     for side in SIDES:
-        for key in ("cells", "iterations", "converged", "unsteadiness"):
+        for key in ("cells", "iterations", "converged", "unsteadiness", "seconds"):
             record[f"{side}_{key}"] = sides[side].get(key)
     return record
 
@@ -388,9 +394,11 @@ def simulate(params: CaseParams, work_dir: Path, processes: int = 8, turbulence:
     sides = {}
     for side, geom in airway(params).items():
         case_dir = work_dir / side
+        start = time.perf_counter()
         cells = write_case(case_dir, geom, processes, turbulence, cells_across)
         run_case(case_dir, image)
-        sides[side] = {**read_side(case_dir), "cells": cells}
+        seconds = time.perf_counter() - start  # meshing plus solving, wall clock
+        sides[side] = {**read_side(case_dir), "cells": cells, "seconds": seconds}
     return to_record(sides)
 
 
