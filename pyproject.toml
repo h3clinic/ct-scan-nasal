@@ -1,0 +1,26 @@
+[project]
+name = "ct-scan-nasal"
+version = "0.1.0"
+description = "Research prototype: parametric nasal airway cases, airflow resistance, and a small-model agent loop. Research only, not medical advice."
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "trimesh>=4.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+nasal-generate = "nasal.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
