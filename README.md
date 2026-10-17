@@ -27,7 +27,7 @@ The agent count stays at four: more agents mostly add latency and failure points
 | Meshing | gmsh (Python API) | **Done**: `nasal.simulate.mesh_side` |
 | Airflow ground truth | OpenFOAM v2606 (`opencfd/openfoam-run:2606` in Docker), simpleFoam | **Done**: `nasal.simulate`, `nasal-simulate` |
 | Fast stand-in model | PyTorch, or NVIDIA PhysicsNeMo | Planned |
-| Decision rules (standard and improved) | Plain Python functions | Planned, pending ENT input |
+| Decision rules (standard and improved) | Plain Python functions | **Prototype**: `nasal.decision`, thresholds are placeholders pending ENT review |
 | Comparison and logging | pandas + JSON agent log | Planned |
 | Demo | Streamlit or Gradio with PyVista or Plotly | Planned |
 | Model serving | vLLM or TensorRT-LLM (OpenAI-style endpoint) | Planned |
@@ -125,6 +125,17 @@ nasal-simulate --ids case_0003 --cells-across 9 --turbulence laminar
 ```
 
 `data/simulated.csv` has one row per simulated case with the same columns as `cases.csv`, plus `turbulence` and the solver checks. OpenFOAM case folders and logs go to `data/sim/<case_id>/<side>/`. Each side takes about 3 to 5 minutes on 8 cores. The command ends by printing simulated / formula ratios for every column. Tests that need OpenFOAM are skipped when Docker is not available, and the mesh tests are skipped without gmsh.
+
+## Surgical decision rules (Workflow++ prototype)
+
+`nasal.decision` compares the standard visual rule with a map-driven rule, scored by virtual surgery. Thresholds are **placeholders, not clinical values**, and no ENT has reviewed them yet.
+
+- **Virtual surgery** (`surgery.py`): turbinate reduction shrinks `turbinate_scale` by 30%, septoplasty sets `septum_deviation` to 0, and valve repair widens `valve_angle_deg` by 4°. Results are clamped to the parameter ranges.
+- **Standard rule**: turbinate reduction, plus septoplasty when `|septum_deviation|` > 0.3.
+- **Workflow++ rule**: run every combination of procedures through the resistance evaluator, then pick the smallest plan that reaches 90% of the best total-resistance drop.
+- **Reclassification**: `python -m nasal.decision --cases data/cases.csv --out data/decisions.csv` writes one row per case with both plans, whether the plan changed, and the resistance drop for each, then prints a summary by dominant region.
+
+The evaluator is pluggable (`evaluator=`). It defaults to the uncalibrated formula baseline, so the reclassification rates it prints describe the baseline, not real noses. The surrogate or OpenFOAM can be passed in once they are available. The baseline has no inferior/middle/superior flow split or wall shear yet, so the Workflow++ plan's flow-balance and ENS-risk limits are not implemented.
 
 ## Keeping docs in sync
 
