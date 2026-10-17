@@ -11,9 +11,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+sim = ["gmsh>=4.11"]
 
 [project.scripts]
 nasal-generate = "nasal.cli:main"
+nasal-simulate = "nasal.cli:simulate_main"
 
 [build-system]
 requires = ["setuptools>=68"]
