@@ -393,19 +393,28 @@ PROMPTS = {
         "see. Use only ids that review_results returned. Do not write numbers."
     ),
     "explainer": (
-        "You are the Explainer. Write a short plain-language summary (at most 150 words) of the results JSON for "
-        "a non-specialist. Use only numbers that appear in the JSON, copied exactly; do not compute new ones. "
-        "Resistance is in Pa*s/cm^3; higher means harder to breathe through. For every what_if entry, say what "
-        "changed and give total_resistance_before, total_resistance_after and total_change_pct. "
-        "If the JSON has an openfoam entry, give its total_resistance as this patient's simulation result and "
-        "say the other numbers are fast surrogate predictions. Mention every flag listed. "
-        "The prediction entry is the patient's current resistance, before any surgery. If the JSON has a surgery "
-        "entry, copy its recommended_result and look_at_scan_result sentences, and if there is an openfoam_check, "
-        "its recommended_plan_result and look_at_scan_plan_result sentences and its best_plan; keep the words "
-        "lower and higher exactly as written. Give the why reasons and the dominant_region (and "
-        "dominant_region_note if present). Say a surgeon makes the final decision."
+        "You are the Explainer. Write a short plain-language summary (at most 120 words) of the results for a "
+        "non-specialist. Use only numbers that appear in the results, copied exactly; do not compute new ones. "
+        "Never mention field names or the JSON. Resistance is in Pa*s/cm^3; higher means harder to breathe "
+        "through. Mention every flag listed."
     ),
 }
+
+# Added to the Explainer's prompt only when the results have that entry, so it never reads out
+# instructions that don't apply.
+EXPLAINER_PARTS = {
+    "what_if": "For each what-if, say what changed and give the resistance before, after, and the percent change.",
+    "openfoam": "The openfoam total is this patient's simulation result; the prediction is a fast surrogate "
+                "estimate of their current resistance.",
+    "surgery": "Lead with the recommended surgery: copy the recommended_result sentence, then the "
+               "recommended_plan_result and best_plan from openfoam_check if present, then compare with the "
+               "look_at_scan_result sentence. Keep the words lower and higher exactly as written. Give the why "
+               "reasons, and the dominant_region_note if present. End by saying a surgeon makes the final decision.",
+}
+
+
+def explainer_prompt(facts: dict) -> str:
+    return " ".join([PROMPTS["explainer"], *(part for key, part in EXPLAINER_PARTS.items() if facts.get(key))])
 
 
 @dataclass
@@ -707,7 +716,7 @@ def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogat
         prompt = f"Results JSON:\n{json.dumps(facts, indent=1)}"
         if attempt:
             prompt += f"\nYour previous text had problems: {problem}. Rewrite it."
-        text = run_agent(client, model, "explainer", PROMPTS["explainer"], prompt, tools, [], log,
+        text = run_agent(client, model, "explainer", explainer_prompt(facts), prompt, tools, [], log,
                          extra_body=extra)
         bad, missing = unsupported_numbers(text, facts), missing_numbers(text, facts)
         log.add("explainer", "number_check", unsupported=bad, missing=missing)
