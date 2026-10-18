@@ -29,6 +29,18 @@ def test_plus_plus_targets_a_narrow_valve():
     assert "valve_repair" in plus_plus_rule(p)
 
 
+def test_recommendation_is_labeled_and_ranked():
+    from nasal.decision.recommend import RESEARCH_ONLY, recommend
+
+    out = recommend(CaseParams(valve_angle_deg=9.0, turbinate_scale=1.3, septum_deviation=0.6), evaluate, "formula")
+    assert out["label"] == RESEARCH_ONLY
+    assert out["thresholds"]["status"].startswith("placeholder")
+    drops = [o["drop_pct"] for o in out["options"]]
+    assert drops == sorted(drops, reverse=True)
+    assert out["suggested"]["drop_pct"] >= 0.9 * drops[0]
+    assert len(out["why"]) == len(out["suggested"]["plan"].split("+"))
+
+
 def test_reclassification_table():
     table = reclassify(build_table(sample_cases(20, seed=1)))
     assert len(table) == 20
