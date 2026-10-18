@@ -148,3 +148,19 @@ def test_agent_eval_scores_a_run():
     s = result["summary"]
     assert s["completed"] == 1 and s["case_correct"] == 1 and s["what_if_when_asked"] == "1/1"
     assert s["explainer_template_fallback"] == 1 and s["tool_errors_sent_back"] == 0
+
+
+def test_planner_that_never_finishes_keeps_its_results():
+    what_if = {"label": "wider valve", "valve_angle_deg": 15}
+    client = ScriptedClient([
+        reply(calls=[call("set_case", CASE)]),
+        reply(calls=[call("predict_resistance", CASE, 1)]),
+        *[reply(calls=[call("what_if", what_if, 2 + i)]) for i in range(agents.PLANNER_MAX_TURNS - 1)],
+        reply(calls=[call("review_results", {}, 20)]),
+        reply(calls=[call("report_flags", {"flag_ids": ["no_surrogate"]}, 21)]),
+        reply(content="placeholder"),
+        reply(content="placeholder"),
+    ])
+    out = agents.run_pipeline("valve 9 degrees, what if wider?", client=client)
+    assert "prediction" in out["facts"]
+    assert any(s["kind"] == "fallback" and s["agent"] == "planner" for s in out["log"])

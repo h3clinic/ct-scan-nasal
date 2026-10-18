@@ -35,6 +35,7 @@ DEFAULT_MODEL = os.environ.get("NASAL_LLM_MODEL", "nemotron")
 MODEL_INFO = {"name": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", "total_params": "30B", "active_params": "3B"}
 SURROGATE_PATH = Path("data/surrogate.pt")
 MAX_TURNS = 6
+PLANNER_MAX_TURNS = 10  # surgery questions ask for several what-ifs
 DISAGREEMENT_FLAG_PCT = 25.0  # surrogate vs formula, a model-agreement check, not a clinical threshold
 EXTRAPOLATION_SD = 3.0  # patient geometry this many std devs from the training mean is flagged
 PATIENTS_PATH = Path("data/patient_sim.csv")
@@ -352,9 +353,10 @@ class AgentLog:
 
 def run_agent(client, model: str, agent: str, system: str, user: str, tools: Tools, tool_names: list[str],
               log: AgentLog, final_tool: str | tuple[str, ...] | None = None, max_turns: int = MAX_TURNS,
-              extra_body: dict | None = None):
+              extra_body: dict | None = None, stop_at_limit: bool = False):
     """Chat loop: execute tool calls in code, send errors back, stop at final_tool.
-    Returns the final tool's arguments, or the model's text if no final tool."""
+    Returns the final tool's arguments, or the model's text if no final tool. With stop_at_limit,
+    running out of turns keeps the tool results so far and returns None instead of raising."""
     finals = (final_tool,) if isinstance(final_tool, str) else tuple(final_tool or ())
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     schemas = [SCHEMAS[n] for n in tool_names]
@@ -405,6 +407,9 @@ def run_agent(client, model: str, agent: str, system: str, user: str, tools: Too
                 result = {"error": str(err)}
             log.add(agent, "tool", name=name, arguments=c.function.arguments, result=result)
             messages.append({"role": "tool", "tool_call_id": c.id, "content": json.dumps(result)})
+    if stop_at_limit:
+        log.add(agent, "fallback", reason=f"stopped after {max_turns} turns; using the results so far")
+        return None
     raise RuntimeError(f"{agent} agent did not finish in {max_turns} turns")
 
 
@@ -511,7 +516,8 @@ def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogat
     if tools.patient is not None:
         pid = tools.patient["patient"]
         run_agent(client, model, "planner", PROMPTS["planner_patient"], f"Request: {request}\nPatient: {pid}", tools,
-                  ["patient_resistance", "patient_what_if", "finish"], log, final_tool="finish", extra_body=extra)
+                  ["patient_resistance", "patient_what_if", "finish"], log, final_tool="finish", extra_body=extra,
+                  max_turns=PLANNER_MAX_TURNS, stop_at_limit=True)
         if "prediction" not in tools.results:
             log.add("planner", "fallback", reason="planner skipped patient_resistance")
             tools.patient_resistance({"patient_id": pid})
@@ -520,7 +526,7 @@ def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogat
         case_json = json.dumps(asdict(tools.case))
         run_agent(client, model, "planner", PROMPTS["planner"], f"Request: {request}\nCase: {case_json}", tools,
                   ["predict_resistance", "formula_resistance", "what_if", "finish"], log, final_tool="finish",
-                  extra_body=extra)
+                  extra_body=extra, max_turns=PLANNER_MAX_TURNS, stop_at_limit=True)
         if "prediction" not in tools.results:  # the plan must include a prediction; code enforces it
             log.add("planner", "fallback", reason="planner skipped predict_resistance")
             tools.predict_resistance(asdict(tools.case))
