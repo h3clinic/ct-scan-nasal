@@ -167,6 +167,8 @@ class Tools:
         if not files:
             raise ToolError("virtual surgery needs the patient's CT labels, which are not loaded")
         out = dict(surgery_options(pid, str(files[0]), self.patient_surrogate))
+        out.update(_technique_notes(row if not np.isnan(row.get("total_resistance", np.nan))
+                                    else self.patient_surrogate.predict(row), out["recommended_plan"]))
         if self.surgery is not None:
             runs = self.surgery[self.surgery.patient == pid]
             cfd = dict(zip(runs.plan, runs.total_resistance))
@@ -180,6 +182,29 @@ class Tools:
                         check[f"{key}_plan_drop_pct"] = drops[plan]
                         check[f"{key}_plan_result"] = _drop_text(plan, drops[plan], "in OpenFOAM")
                 out["openfoam_check"] = check
+        self.results["surgery"] = out
+        return out
+
+    def recommend_surgery(self, args: dict) -> dict:
+        """Pankaj's final-stage recommender (nasal.decision.recommend) on the current synthetic case."""
+        from .decision.recommend import recommend
+
+        if self.case is None:
+            raise ToolError("set_case first")
+        source, predict = self.predictor()
+        r = recommend(self.case, predict, source)
+        plan, std = plan_name(r["suggested"]["plan"]), plan_name(r["standard"]["plan"])
+        out = {
+            "source": f"virtual surgery on the case, scored by the {r['evaluator']}",
+            "recommended_plan": plan, "recommended_drop_pct": r["suggested"]["drop_pct"],
+            "recommended_result": _drop_text(plan, r["suggested"]["drop_pct"], "predicted"),
+            "look_at_scan_plan": std, "look_at_scan_drop_pct": r["standard"]["drop_pct"],
+            "look_at_scan_result": _drop_text(std, r["standard"]["drop_pct"], "predicted"),
+            "why": r["why"],
+            "dominant_region": f"{r['before']['worse_side']} {r['dominant_region']}: "
+                               f"{r['before']['region_share_pct_worse_side'][r['dominant_region']]}% of that side's resistance",
+            "not_modeled": r["not_modeled"],
+        }
         self.results["surgery"] = out
         return out
 
@@ -319,6 +344,11 @@ SCHEMAS = {
         "Virtual surgery on the patient's CT airway: turbinate reduction, valve repair, septoplasty and their "
         "combinations, each scored for resistance drop; returns the recommended plan and the look-at-the-scan plan.",
         {"type": "object", "properties": {"patient_id": {"type": "string"}}, "required": ["patient_id"]}),
+    "recommend_surgery": _tool(
+        "recommend_surgery",
+        "Final-stage surgery suggestion for the current case: virtual turbinate reduction, valve repair and "
+        "septoplasty in every combination, the suggested plan with reasons, and the look-at-the-scan plan.",
+        {"type": "object", "properties": {}}),
     "report_flags": _tool("report_flags", "Report which flags from review_results matter for the reader.", {
         "type": "object",
         "properties": {"flag_ids": {"type": "array", "items": {"type": "string"}},
@@ -355,6 +385,7 @@ PROMPTS = {
         "You are the Planner. A case has been set. Decide which tools answer the user's request. Always call "
         "predict_resistance and formula_resistance for the case. If the user asks about a change (for example "
         "widening the valve or reducing the turbinate), call what_if with only the parameters that change. "
+        "If the user asks which surgery or treatment to do, call recommend_surgery once. "
         "Never state numbers yourself. When done, call finish."
     ),
     "critic": (
@@ -371,7 +402,8 @@ PROMPTS = {
         "The prediction entry is the patient's current resistance, before any surgery. If the JSON has a surgery "
         "entry, copy its recommended_result and look_at_scan_result sentences, and if there is an openfoam_check, "
         "its recommended_plan_result and look_at_scan_plan_result sentences and its best_plan; keep the words "
-        "lower and higher exactly as written. Say a surgeon makes the final decision."
+        "lower and higher exactly as written. Give the why reasons and the dominant_region (and "
+        "dominant_region_note if present). Say a surgeon makes the final decision."
     ),
 }
 
@@ -507,6 +539,11 @@ def template_summary(facts: dict) -> str:
     s = facts.get("surgery")
     if s:
         lines.append(f"Recommended surgery: {s['recommended_result']}. Look-at-the-scan plan: {s['look_at_scan_result']}.")
+        lines += [f"Why: {w}." for w in s.get("why", [])]
+        if s.get("dominant_region"):
+            lines.append(f"Most resistance: {s['dominant_region']}.")
+        if s.get("dominant_region_note"):
+            lines.append(f"Note: {s['dominant_region_note']}.")
         check = s.get("openfoam_check")
         if check and check.get("recommended_plan_result"):
             lines.append(f"OpenFOAM check: {check['recommended_plan_result']}; best plan: {check['best_plan']}.")
@@ -552,6 +589,30 @@ def _surgery_options(pid: str, label_path: str, surrogate) -> dict:
         "look_at_scan_result": _drop_text(plan_name(standard), drop[standard], "predicted"),
         "method": "smallest plan within 90% of the best predicted drop",
     }
+
+
+def _technique_notes(record: dict, plan: str) -> dict:
+    """Pankaj's recommender notes for a patient: why each procedure, where the resistance sits,
+    and what the model leaves out."""
+    from .decision.recommend import REASONS
+    from .decision.rules import region_fractions
+
+    shares = region_fractions(record)
+    side = max(SIDES, key=lambda s: record[f"{s}_resistance"])
+    top = max(shares, key=shares.get)
+    targeted = {"turbinate reduction": "turbinate", "valve repair": "valve"}
+    procedures = [p for p in plan.split(" + ") if p != "no surgery"]
+    notes = {
+        "why": [f"{p}: targets {REASONS[p.replace(' ', '_')]}" for p in procedures]
+               or ["No procedure lowered modeled resistance."],
+        "dominant_region": f"{side} {top}: {round(100 * shares[top], 1)}% of that side's resistance",
+        "not_modeled": ["inferior/middle/superior flow split", "wall shear and ENS-risk patterns",
+                        "mucosal state", "patient symptoms"],
+    }
+    if top not in targeted.values():
+        notes["dominant_region_note"] = (f"none of the three procedures acts on the {top}, "
+                                         f"where most of the {side} side's resistance sits")
+    return notes
 
 
 def _drop_text(plan: str, drop_pct: float, where: str) -> str:
@@ -625,7 +686,8 @@ def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogat
     else:
         case_json = json.dumps(asdict(tools.case))
         run_agent(client, model, "planner", PROMPTS["planner"], f"Request: {request}\nCase: {case_json}", tools,
-                  ["predict_resistance", "formula_resistance", "what_if", "finish"], log, final_tool="finish",
+                  ["predict_resistance", "formula_resistance", "what_if", "recommend_surgery", "finish"], log,
+                  final_tool="finish",
                   extra_body=extra, max_turns=PLANNER_MAX_TURNS, stop_at_limit=True)
         if "prediction" not in tools.results:  # the plan must include a prediction; code enforces it
             log.add("planner", "fallback", reason="planner skipped predict_resistance")

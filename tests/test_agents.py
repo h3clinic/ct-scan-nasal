@@ -181,3 +181,14 @@ def test_surgery_tool_needs_labels_and_template_names_the_plan():
     assert "septoplasty: 2.0% higher" in text
     assert agents.missing_numbers(text, facts) == []
     assert agents.plan_name("turbinate_reduction+valve_repair") == "turbinate reduction + valve repair"
+
+
+def test_recommend_surgery_uses_the_final_stage_recommender():
+    tools = agents.Tools()
+    tools.set_case(CASE)
+    out = tools.recommend_surgery({})
+    assert out["recommended_plan"] and out["why"] and "resistance" in out["dominant_region"]
+    assert tools.results["surgery"] is out
+    text = agents.template_summary({"prediction": {**tools.predict_resistance(CASE)}, "surgery": out})
+    assert "Why:" in text and agents.missing_numbers(text, {"prediction": tools.results["prediction"],
+                                                             "surgery": out}) == []
