@@ -1,6 +1,6 @@
 # Nasal0: 3-minute script (two speakers)
 
-**Live demo:** https://108646989dcf9d39d7.gradio.live
+**Live demo:** https://93650f646ef178da34.gradio.live
 
 **YOU** drives the demo. **PANKAJ** opens, covers results and closes. Times are when each line starts.
 
