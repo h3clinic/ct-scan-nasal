@@ -98,7 +98,8 @@ def comparison_table(row: dict, predicted: dict) -> pd.DataFrame:
 def as_markdown(text: str) -> str:
     """Model text shown as Markdown: write units properly and escape stray asterisks
     and underscores, which would otherwise turn "Pa*s/cm^3" into italics."""
-    for raw, nice in (("Pa*s/cm^3", "Pa·s/cm³"), ("Pa·s/cm^3", "Pa·s/cm³"), ("cm^3", "cm³")):
+    for raw, nice in (("Pa*s/cm^3", "Pa·s/cm³"), ("Pa·s/cm^3", "Pa·s/cm³"), ("cm^3", "cm³"),
+                      (" — ", ", "), ("—", ", "), (" – ", ", ")):
         text = text.replace(raw, nice)
     return text.replace("*", "\\*").replace("_", "\\_")
 
