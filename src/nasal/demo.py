@@ -216,8 +216,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--sim", type=Path, default=agents.PATIENTS_PATH, help="patient_sim.csv from nasal-surrogate --patients")
     parser.add_argument("--model", type=Path, default=agents.PATIENT_SURROGATE_PATH)
     parser.add_argument("--port", type=int, default=7860)
+    parser.add_argument("--share", action="store_true", help="also serve a public gradio.live link (72 h)")
     args = parser.parse_args(argv)
-    build_app(args.labels, args.sim, args.model).launch(server_port=args.port, server_name="127.0.0.1")
+    build_app(args.labels, args.sim, args.model).launch(server_port=args.port, server_name="127.0.0.1", share=args.share)
 
 
 if __name__ == "__main__":

@@ -210,6 +210,7 @@ nasal-surrogate --patients --sim data/patient_sim.csv                     # -> d
 ```bash
 pip install -e ".[demo]"
 nasal-demo --labels nasalseg/labels    # needs data/patient_sim.csv and data/patient_surrogate.json
+nasal-demo --labels nasalseg/labels --share    # also prints a public gradio.live link (valid 72 h; keep this machine and the vLLM tunnel up)
 ```
 
 The demo opens at http://127.0.0.1:7860.
