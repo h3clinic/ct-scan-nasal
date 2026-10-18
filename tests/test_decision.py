@@ -30,10 +30,10 @@ def test_plus_plus_targets_a_narrow_valve():
 
 
 def test_recommendation_is_labeled_and_ranked():
-    from nasal.decision.recommend import RESEARCH_ONLY, recommend
+    from nasal.decision.recommend import MODEL_NOTE, recommend
 
     out = recommend(CaseParams(valve_angle_deg=9.0, turbinate_scale=1.3, septum_deviation=0.6), evaluate, "formula")
-    assert out["label"] == RESEARCH_ONLY
+    assert out["label"] == MODEL_NOTE
     assert out["thresholds"]["status"].startswith("placeholder")
     drops = [o["drop_pct"] for o in out["options"]]
     assert drops == sorted(drops, reverse=True)

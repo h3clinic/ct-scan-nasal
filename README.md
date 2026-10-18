@@ -1,6 +1,6 @@
 # ct-scan-nasal
 
-> **Research only. Not medical advice.** Nothing here is validated for clinical use. There are two geometry sources: idealized synthetic tubes, and real airways segmented from the public NasalSeg CT dataset (CC BY 4.0). Neither is a clinical model of a particular person.
+> There are two geometry sources: idealized synthetic tubes, and real airways segmented from the public NasalSeg CT dataset (CC BY 4.0).
 
 A prototype for evaluating nasal airway obstruction. It builds airway geometries (parametric tubes, and real patient airways from CT), estimates airflow resistance by region, and wraps the tools in a small-model agent loop that explains the results. Every language model stays at or under 33B parameters. Physics and decision rules are plain code, never a language model, so every number traces back to a formula or a simulation.
 
@@ -58,7 +58,7 @@ The agent count stays at four: more agents mostly add latency and failure points
 4. **Wire up the agents**: the Case agent sets parameters, the Planner calls the fast model, the formula and what-if tools, the Critic checks the results and the Explainer writes the summary. *(done; the placeholder decision rules are not wired in yet)*
 5. **Verify with real simulation**: for a sample of cases, run virtual surgery in OpenFOAM and compare both rules' plans against it. This produces the results table. *(done on 10 real airways; see Step 5)*
 6. **Demo**: sliders change the anatomy, the resistance map updates, and agent steps appear live with surrogate error and speed. *(done for real patients; see Demo)*
-7. **Doctor's check**: at least one ENT review of the rules, plus the research-only label.
+7. **Doctor's check**: at least one ENT review of the rules.
 
 ## Case parameters
 
@@ -261,7 +261,7 @@ It prints the summary and writes every model turn, tool call, tool result and ch
 - **Workflow++ rule**: run every combination of procedures through the resistance evaluator, then pick the smallest plan that reaches 90% of the best total-resistance drop.
 - **Reclassification**: `python -m nasal.decision --cases data/cases.csv --out data/decisions.csv` writes one row per case with both plans, whether the plan changed, and the resistance drop for each, then prints a summary by dominant region.
 
-- **Suggested course for one case** (`recommend.py`): `python -m nasal.decision.recommend --valve-angle-deg 9 --turbinate-scale 1.3 --septum-deviation 0.6` prints JSON with the research-only label, the regional map before surgery, the Workflow++ suggestion with a code-written reason for each procedure, the standard plan for comparison, every option ranked by modeled resistance drop, and what is not modeled. It uses the trained surrogate (`data/surrogate.pt`) when present, otherwise the formula. It is not wired into `nasal.agents`.
+- **Suggested course for one case** (`recommend.py`): `python -m nasal.decision.recommend --valve-angle-deg 9 --turbinate-scale 1.3 --septum-deviation 0.6` prints JSON with the regional map before surgery, the Workflow++ suggestion with a code-written reason for each procedure, the standard plan for comparison, every option ranked by modeled resistance drop, and what is not modeled. It uses the trained surrogate (`data/surrogate.pt`) when present, otherwise the formula. It is not wired into `nasal.agents`.
 
 The evaluator is pluggable (`evaluator=`). It defaults to the uncalibrated formula baseline, so the reclassification rates it prints describe the baseline, not real noses. The surrogate or OpenFOAM can be passed in once they are available. The baseline has no inferior/middle/superior flow split or wall shear yet, so the Workflow++ plan's flow-balance and ENS-risk limits are not implemented.
 
@@ -292,7 +292,7 @@ We ran the 12 most obstructed patients whose labels pass the position check. 2 p
 - **Best plan:** turbinate reduction with valve repair was best or near-best for every patient (mean drop 10.2%, up to 26.7%). Turbinate reduction alone averaged 7.8% and valve repair alone 1.9%.
 - **Septoplasty raised resistance** in this model (mean −7.9% alone). The voxel version removes more airway than it adds, so this is an artifact of the model, not a finding about septoplasty. Workflow++ never chose it; the standard rule chose it for 2 patients.
 - **The surrogate ranks plans better than it sizes them:** its predicted drops correlate only 0.47 with OpenFOAM's, with a mean error of 6.1 percentage points. It still picked the right plan, because the plans' differences were large.
-- **Limits:** this is a 10-patient sample of the most obstructed airways, with one-layer changes, steady flow and rigid walls. The rules' thresholds are unreviewed placeholders, so none of this is a clinical recommendation.
+- **Limits:** this is a 10-patient sample of the most obstructed airways, with one-layer changes, steady flow and rigid walls. The rules' thresholds are unreviewed placeholders.
 
 ## Keeping docs in sync
 

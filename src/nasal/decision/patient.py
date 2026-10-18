@@ -1,6 +1,6 @@
 """Virtual surgery and decision rules on real patient airways (NasalSeg voxels).
 
-Research only, not medical advice. Each procedure adds or moves one voxel layer
+Each procedure adds or moves one voxel layer
 (about 0.6 mm) of airway where it acts; the sizes are modeling choices, not
 surgical prescriptions, and the rule thresholds are placeholders pending ENT review.
 

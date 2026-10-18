@@ -1,4 +1,4 @@
-"""Real patient nasal airways from the NasalSeg CT dataset. Research only, not medical advice.
+"""Real patient nasal airways from the NasalSeg CT dataset.
 
 NasalSeg (Zenodo record 13893419, DOI 10.1038/s41597-024-04176-1, CC BY 4.0)
 has 130 CT scans with voxel labels. By their positions in LPS coordinates the

@@ -11,7 +11,7 @@ Every code change ships with the matching doc, test and config changes in the sa
 
 ## Project rules
 
-- **Research only.** Keep the "research only, not medical advice" label on the README and on any demo UI.
+- **No disclaimer labels.** Don't add "research only" or "not medical advice" labels; the owner removed them on purpose. State the model's technical limits (rigid walls, steady flow, placeholder thresholds) where they matter for reading a result.
 - **Physics and decisions are code.** Resistance, surrogate predictions and decision rules are plain functions. Language-model agents call them and never produce or alter numbers themselves.
 - **Decision rules need clinical input.** Don't invent clinical thresholds. Rules stay placeholders until an ENT reviews them, and the README says who reviewed what.
 - **Small models.** Every language model stays at or under 33B parameters, with about four agents. Record each model's size in the README. Check hackathon-allowed versions before pinning NVIDIA tools.

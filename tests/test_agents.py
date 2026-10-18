@@ -50,12 +50,12 @@ def test_pipeline_runs_and_numbers_come_from_code():
     after = round(evaluate(CaseParams(15.0, 1.0, 0.5))["total_resistance"], 4)
     client = ScriptedClient(happy_script([
         f"Total resistance is {expected} Pa*s/cm^3.",  # leaves out the what-if: must be retried
-        f"Total resistance is {expected} Pa*s/cm^3, or {after} with a wider valve. Research only, not medical advice.",
+        f"Total resistance is {expected} Pa*s/cm^3, or {after} with a wider valve.",
     ]))
     out = agents.run_pipeline("narrow valve, septum to the left", client=client)
     assert out["facts"]["prediction"]["total_resistance"] == expected
     assert out["summary_source"] == "explainer"
-    assert {f["id"] for f in out["facts"]["flags"]} >= {"research_only"}
+    assert {f["id"] for f in out["facts"]["flags"]} >= {"model_scope"}
     assert out["facts"]["what_if"][0]["total_resistance_after"] < expected
     agents_seen = {s["agent"] for s in out["log"]}
     assert agents_seen == {"case", "planner", "critic", "explainer"}
@@ -65,7 +65,6 @@ def test_invented_numbers_fall_back_to_the_template():
     client = ScriptedClient(happy_script(["Resistance is 0.9999.", "Still 0.12345678 here."]))
     out = agents.run_pipeline("narrow valve", client=client)
     assert out["summary_source"].startswith("template")
-    assert "Research only, not medical advice." in out["summary"]
     assert not agents.unsupported_numbers(out["summary"], out["facts"])
 
 
@@ -127,7 +126,7 @@ def test_patient_mode_selects_patient_and_runs_patient_tools():
                      call("patient_what_if", {"patient_id": "P003", "side": "left", "narrowest_area_change_pct": 30}, 3)]),
         reply(calls=[call("finish", {}, 4)]),
         reply(calls=[call("review_results", {}, 5)]),
-        reply(calls=[call("report_flags", {"flag_ids": ["research_only"]}, 6)]),
+        reply(calls=[call("report_flags", {"flag_ids": ["model_scope"]}, 6)]),
         reply(content="placeholder"),  # no numbers: fails the check, retried
         reply(content="placeholder"),  # fails again: code writes the template summary
     ])

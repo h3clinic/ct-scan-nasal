@@ -5,7 +5,7 @@ direction the Case agent should set, and whether a what-if must be run). The
 report counts completed runs, correct case choices, invalid tool calls and how
 many the model repaired after the error came back, what-ifs run when asked, and
 whether the Explainer's numbers passed the check first time, after the retry, or
-fell back to the code template. Research only, not medical advice.
+fell back to the code template.
 """
 
 import json

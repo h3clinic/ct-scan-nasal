@@ -1,4 +1,4 @@
-"""Final stage: suggest a course of surgery for one case. Research only, not medical advice.
+"""Final stage: suggest a course of surgery for one case.
 
 Every option is scored by virtual surgery through the evaluator: the trained
 surrogate when data/surrogate.pt exists, else the uncalibrated formula. The
@@ -17,7 +17,7 @@ from ..resistance import evaluate
 from .rules import PLACEHOLDER_THRESHOLDS, Evaluator, candidate_plans, plus_plus_rule, region_fractions, standard_rule
 from .surgery import apply_plan
 
-RESEARCH_ONLY = "Research only, not medical advice. Rules are unreviewed placeholders; idealized synthetic geometry."
+MODEL_NOTE = "Rules are unreviewed placeholders; idealized synthetic geometry."
 REASONS = {
     "turbinate_reduction": "the turbinate region",
     "septoplasty": "the side narrowed by septal deviation",
@@ -61,7 +61,7 @@ def recommend(p: CaseParams, evaluator: Evaluator | None = None, source: str | N
     by_plan = {o["plan"]: o for o in options}
     worse = max(SIDES, key=lambda s: record[f"{s}_resistance"])
     return {
-        "label": RESEARCH_ONLY,
+        "label": MODEL_NOTE,
         "evaluator": source or "custom",
         "case": {k: getattr(p, k) for k in PARAM_SPECS},
         "before": {
@@ -84,7 +84,7 @@ def recommend(p: CaseParams, evaluator: Evaluator | None = None, source: str | N
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(description="Suggest a course of surgery for one case. " + RESEARCH_ONLY)
+    ap = argparse.ArgumentParser(description="Suggest a course of surgery for one case. " + MODEL_NOTE)
     for name, spec in PARAM_SPECS.items():
         ap.add_argument(f"--{name.replace('_', '-')}", type=float, default=getattr(CaseParams(), name),
                         help=f"{spec.description} ({spec.low} to {spec.high} {spec.unit})")

@@ -183,7 +183,7 @@ def _patient_surgery(args, files) -> None:
 def patients_main(argv: list[str] | None = None) -> None:
     from . import anatomy
 
-    parser = argparse.ArgumentParser(description="Real patient airways from NasalSeg label volumes. Research only.")
+    parser = argparse.ArgumentParser(description="Real patient airways from NasalSeg label volumes.")
     sub = parser.add_subparsers(dest="command", required=True)
     m = sub.add_parser("measure", help="measure every patient's cut airway")
     s = sub.add_parser("simulate", help="run OpenFOAM on patient airways")
@@ -244,7 +244,7 @@ def agents_main(argv: list[str] | None = None) -> None:
     from . import agents
 
     parser = argparse.ArgumentParser(
-        description="Run the Case, Planner, Critic and Explainer agents on a description. Research only."
+        description="Run the Case, Planner, Critic and Explainer agents on a description."
     )
     parser.add_argument("request", nargs="?", default="", help='e.g. "narrow nasal valve, septum bent to the left; what if the valve is widened?"')
     parser.add_argument("--surrogate", type=Path, default=agents.SURROGATE_PATH)

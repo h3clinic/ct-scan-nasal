@@ -1,5 +1,5 @@
 """Step 6 demo: a real patient's 3D airway colored by resistance, instant what-ifs, and the
-Nemotron agents running live. Research only, not medical advice.
+Nemotron agents running live.
 
 Run `nasal-demo --labels <NasalSeg labels folder>` after `nasal-patients simulate` and
 `nasal-surrogate --patients`. The agents need the vLLM endpoint (NASAL_LLM_URL); the rest
@@ -19,7 +19,7 @@ import pandas as pd
 from . import agents, anatomy
 from .params import REGIONS, SIDES
 
-DISCLAIMER = "Research only, not medical advice. Real CT airways (NasalSeg, CC BY 4.0); flow is a rigid-wall steady model."
+DISCLAIMER = "Real CT airways (NasalSeg, CC BY 4.0); flow is a rigid-wall steady model."
 DEFAULT_PATIENT = "P022"  # one side has three times the other's resistance
 DEFAULT_QUESTION = "Which side is harder to breathe through, and what if the narrower side's narrowest section were widened by 30%?"
 
@@ -204,7 +204,7 @@ def build_app(labels_dir: Path, sim_path: Path = agents.PATIENTS_PATH, model_pat
 def main(argv: list[str] | None = None) -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Step 6 demo (Gradio). Research only.")
+    parser = argparse.ArgumentParser(description="Step 6 demo (Gradio).")
     parser.add_argument("--labels", type=Path, required=True, help="NasalSeg labels folder (*_seg.nrrd)")
     parser.add_argument("--sim", type=Path, default=agents.PATIENTS_PATH, help="patient_sim.csv from nasal-surrogate --patients")
     parser.add_argument("--model", type=Path, default=agents.PATIENT_SURROGATE_PATH)

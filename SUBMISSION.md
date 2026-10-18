@@ -1,7 +1,5 @@
 # ct-scan-nasal: NVIDIA x Red Hat Small Models Hack submission
 
-> **Research only. Not medical advice.** Real CT airways from a public dataset, modeled with rigid walls and steady flow. The decision rules are unreviewed placeholders; no ENT has reviewed them.
-
 ## Pitch
 
 A blocked nose is usually judged by eye: a surgeon looks at a CT scan, sees a bent septum or big turbinates, and operates on what looks wrong. **ct-scan-nasal** asks where the air actually loses pressure.
@@ -47,7 +45,7 @@ Before going live:
 
 | Time | Show | Say |
 | --- | --- | --- |
-| 0:00 | The research-only banner and the patient picker | "These are 130 real airways from public CT scans. Nothing here is medical advice." |
+| 0:00 | The patient picker | "These are 130 real airways from public CT scans." |
 | 0:20 | P022's 3D airway, colored by OpenFOAM resistance; rotate it | "This is the real nasal cavity of one patient. Red is where the pressure is lost. The left side carries three times the right's resistance, and most of it sits at the back of the left cavity." |
 | 0:50 | The table: OpenFOAM against the surrogate | "One simulation takes minutes on a cluster. The surrogate takes a fraction of a millisecond, and the table shows its error honestly: here it misses by 45%." |
 | 1:20 | Left-narrowest slider to +30% | "A what-if: widen the narrowest section. The map updates instantly through the surrogate." |
@@ -60,7 +58,7 @@ Backup if the endpoint is down: the 3D map, sliders and table work offline; show
 
 ## Honest limits
 
-- **Not clinical:** the voxel airways have stair-stepped walls, and the flow model is steady with rigid walls and no mucosa. Region boundaries are positions along each cavity, not anatomical landmarks.
+- **Model fidelity:** the voxel airways have stair-stepped walls, and the flow model is steady with rigid walls and no mucosa. Region boundaries are positions along each cavity, not anatomical landmarks.
 - **Surrogate:** it ranks well, but its size estimates are rough (16% side error; it underpredicts the most obstructed sides). The Critic flags large disagreements.
 - **Virtual surgery:** each procedure is a 0.6 mm voxel change. The voxel septoplasty removes more airway than it adds, so it raises resistance in this model; that is an artifact, not a finding about septoplasty.
 - **Data:** NasalSeg contains duplicate scans (P002/P003, P009/P010, P080/P081). 4 scans couldn't be simulated.

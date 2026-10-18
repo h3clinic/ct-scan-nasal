@@ -1,4 +1,4 @@
-"""Four small-model agents that call plain-code tools. Research only, not medical advice.
+"""Four small-model agents that call plain-code tools.
 
 Every agent is the same served model (NVIDIA Nemotron 3.5 Lightning 30B-A3B by
 default) with its own instructions and its own tools:
@@ -246,8 +246,7 @@ class Tools:
                               "text": f"The {hi} side has over 1.5 times the resistance of the {lo} side."})
         geometry = ("Real CT airway (NasalSeg), voxel-resolution model." if self.patient is not None
                     else "Synthetic, idealized geometry.")
-        flags.append({"id": "research_only", "severity": "info",
-                      "text": f"{geometry} Research only, not medical advice."})
+        flags.append({"id": "model_scope", "severity": "info", "text": geometry})
         self.results["flags"] = flags
         return {"flags": flags}
 
@@ -334,7 +333,7 @@ PROMPTS = {
         "changed and give total_resistance_before, total_resistance_after and total_change_pct. "
         "If the JSON has an openfoam entry, give its total_resistance as this patient's simulation result and "
         "say the other numbers are fast surrogate predictions. Mention every flag listed. "
-        "Do not recommend treatment. End with: Research only, not medical advice."
+        "Do not recommend treatment."
     ),
 }
 
@@ -463,8 +462,6 @@ def template_summary(facts: dict) -> str:
                      f"to {w['total_resistance_after']} ({w['total_change_pct']}%).")
     for f in facts.get("flags", []):
         lines.append(f["text"])
-    if not any(f["id"] == "research_only" for f in facts.get("flags", [])):
-        lines.append("Research only, not medical advice.")
     return " ".join(lines)
 
 
@@ -532,7 +529,7 @@ def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogat
     flags_chosen = run_agent(client, model, "critic", PROMPTS["critic"], "Review the results.", tools,
                              ["review_results", "check_parameters", "report_flags"], log, final_tool="report_flags",
                              extra_body=extra)
-    chosen = set(flags_chosen.get("flag_ids", [])) | {"research_only"}
+    chosen = set(flags_chosen.get("flag_ids", [])) | {"model_scope"}
     chosen |= {f["id"] for f in tools.results["flags"] if f["severity"] == "error"}  # errors are never dropped
     facts = {"case": case_facts, **{k: v for k, v in tools.results.items() if k != "flags"},
              "flags": [f for f in tools.results["flags"] if f["id"] in chosen]}
