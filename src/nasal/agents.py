@@ -332,7 +332,8 @@ PROMPTS = {
         "a non-specialist. Use only numbers that appear in the JSON, copied exactly; do not compute new ones. "
         "Resistance is in Pa*s/cm^3; higher means harder to breathe through. For every what_if entry, say what "
         "changed and give total_resistance_before, total_resistance_after and total_change_pct. "
-        "Mention every flag listed. "
+        "If the JSON has an openfoam entry, give its total_resistance as this patient's simulation result and "
+        "say the other numbers are fast surrogate predictions. Mention every flag listed. "
         "Do not recommend treatment. End with: Research only, not medical advice."
     ),
 }
@@ -341,9 +342,13 @@ PROMPTS = {
 @dataclass
 class AgentLog:
     steps: list = field(default_factory=list)
+    listener: Callable[[dict], None] | None = None  # called with each step as it happens (live demo)
 
     def add(self, agent: str, kind: str, **data) -> None:
-        self.steps.append({"agent": agent, "kind": kind, "t": round(time.time(), 3), **data})
+        step = {"agent": agent, "kind": kind, "t": round(time.time(), 3), **data}
+        self.steps.append(step)
+        if self.listener is not None:
+            self.listener(step)
 
 
 def run_agent(client, model: str, agent: str, system: str, user: str, tools: Tools, tool_names: list[str],
@@ -440,6 +445,8 @@ def unsupported_numbers(text: str, facts: dict) -> list[str]:
 def missing_numbers(text: str, facts: dict) -> list[str]:
     """Key results the summary must quote: the total prediction and each what-if's after value."""
     required = [facts["prediction"]["total_resistance"]] + [w["total_resistance_after"] for w in facts.get("what_if", [])]
+    if "openfoam" in facts:
+        required.append(facts["openfoam"]["total_resistance"])
     found = [float(t) for t in NUMBER.findall(text)]
     return [f"{v:g}" for v in required if not any(abs(f - v) <= 0.5 * 10 ** -3 + 1e-9 for f in found)]
 
@@ -449,6 +456,8 @@ def template_summary(facts: dict) -> str:
     p = facts["prediction"]
     lines = [f"Predicted total nasal resistance is {p['total_resistance']} Pa*s/cm^3 "
              f"(left {p['left_resistance']}, right {p['right_resistance']}), from the {p['source']}."]
+    if "openfoam" in facts:
+        lines.append(f"This patient's OpenFOAM simulation gives {facts['openfoam']['total_resistance']} Pa*s/cm^3.")
     for w in facts.get("what_if", []):
         lines.append(f"With the change '{w['label']}', total resistance goes from {w['total_resistance_before']} "
                      f"to {w['total_resistance_after']} ({w['total_change_pct']}%).")
@@ -483,7 +492,8 @@ def load_patients(sim_path: Path = PATIENTS_PATH, model_path: Path = PATIENT_SUR
 
 
 def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogate=None,
-                 thinking: bool = False, patients=None, patient_surrogate=None) -> dict:
+                 thinking: bool = False, patients=None, patient_surrogate=None,
+                 listener: Callable[[dict], None] | None = None) -> dict:
     """Case -> Planner -> Critic -> Explainer. Returns the facts, the summary and the full agent log.
     With `patients` (and their surrogate) the Case agent may pick a real NasalSeg patient."""
     if client is None:
@@ -491,7 +501,7 @@ def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogat
         client = OpenAI(base_url=DEFAULT_URL, api_key=os.environ.get("NASAL_LLM_KEY", "none"))
     extra = {"chat_template_kwargs": {"enable_thinking": thinking}}
     tools = Tools(surrogate=surrogate, patients=patients, patient_surrogate=patient_surrogate)
-    log = AgentLog()
+    log = AgentLog(listener=listener)
     start = time.time()
 
     if patients is not None:

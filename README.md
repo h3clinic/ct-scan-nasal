@@ -32,7 +32,7 @@ The agent count stays at four: more agents mostly add latency and failure points
 | Fast stand-in model | PyTorch MLP (tubes), power law on measured geometry (patients) | **Done**: `nasal.surrogate`, `nasal-surrogate` |
 | Decision rules (standard and improved) | Plain Python functions | **Prototype**: `nasal.decision`, thresholds are placeholders pending ENT review |
 | Comparison and logging | pandas + JSON agent log | **Done**: `nasal-agents --log` |
-| Demo | Streamlit or Gradio with PyVista or Plotly | Planned |
+| Demo | Gradio + Plotly | **Done**: `nasal.demo`, `nasal-demo` |
 | Model serving | vLLM `v0.27.1` on NVIDIA Brev (1x H100), OpenAI-style endpoint | **Done**: see Agents usage |
 
 ## Workflow
@@ -42,7 +42,7 @@ The agent count stays at four: more agents mostly add latency and failure points
 3. **Train the fast model** on the simulation results, recording its error and speedup. *(done; see Fast surrogate)*
 4. **Wire up the agents**: the Case agent sets parameters, the Planner calls the fast model, the formula and what-if tools, the Critic checks the results and the Explainer writes the summary. *(done; the placeholder decision rules are not wired in yet)*
 5. **Verify with real simulation**: for a sample of cases, run virtual surgery in OpenFOAM and compare both rules' plans against it. This produces the results table.
-6. **Demo**: sliders change the anatomy, the resistance map updates, and agent steps appear live with surrogate error and speed.
+6. **Demo**: sliders change the anatomy, the resistance map updates, and agent steps appear live with surrogate error and speed. *(done for real patients; see Demo)*
 7. **Doctor's check**: at least one ENT review of the rules, plus the research-only label.
 
 ## Case parameters
@@ -190,7 +190,22 @@ nasal-patients simulate --labels nasalseg/labels --ids P001 --procs 8    # OpenF
 nasal-surrogate --patients --sim data/patient_sim.csv                     # -> data/patient_surrogate.json
 ```
 
-`simulate` skips patients already in its output, so it can resume, and logs a failed patient and moves on. Each patient takes about 8 minutes on 4 cores. We ran 12 batches of `--procs 4` on a 48-core Brev instance, each with its own `--out`, and trained on all the files together. With `data/patient_sim.csv` and `data/patient_surrogate.json` present, `nasal-agents` also accepts requests about a patient by id (for example "patient P022: what if the left narrowest section were 30% wider?").
+`simulate` skips patients already in its output, so it can resume, and logs a failed patient and moves on. Each patient takes several minutes on 4 cores (we did not time them individually). We ran 12 batches of `--procs 4` on a 48-core Brev instance, each with its own `--out`, and trained on all the files together. With `data/patient_sim.csv` and `data/patient_surrogate.json` present, `nasal-agents` also accepts requests about a patient by id (for example "patient P022: what if the left narrowest section were 30% wider?").
+
+### Demo
+
+```bash
+pip install -e ".[demo]"
+nasal-demo --labels nasalseg/labels    # needs data/patient_sim.csv and data/patient_surrogate.json
+```
+
+The demo opens at http://127.0.0.1:7860.
+
+- **Patient:** pick any simulated NasalSeg patient (it opens on P022, whose left side has three times the right's resistance).
+- **3D airway:** an interactive Plotly view colored by each region's resistance, from that patient's OpenFOAM run or from the surrogate.
+- **What-if:** sliders widen or narrow each side's narrowest section and recolor instantly through the surrogate.
+- **Table:** OpenFOAM against the surrogate for every region, with the surrogate's error and its measured prediction time.
+- **Agents:** "Run agents" sends a question to the four agents and lists each step as it happens: tool calls, errors sent back, the code number check. Then it shows the summary and flags. The agents need the vLLM endpoint (see Agents); everything else works offline.
 
 ### Agents
 
