@@ -124,6 +124,7 @@ def build_app(labels_dir: Path, sim_path: Path = agents.PATIENTS_PATH, model_pat
     import gradio as gr
 
     patients, surrogate = agents.load_patients(sim_path, model_path)
+    surgery = agents.load_surgery()
     if patients is None:
         raise SystemExit(f"need {sim_path} and {model_path}: run nasal-patients simulate and nasal-surrogate --patients")
     ids = list(patients.patient)
@@ -158,7 +159,8 @@ def build_app(labels_dir: Path, sim_path: Path = agents.PATIENTS_PATH, model_pat
         def work():
             try:
                 result["out"] = agents.run_pipeline(f"Patient {pid}. {question}", patients=patients,
-                                                    patient_surrogate=surrogate, listener=q.put)
+                                                    patient_surrogate=surrogate, listener=q.put,
+                                                    labels_dir=Path(labels_dir), surgery=surgery)
             except Exception as err:  # shown in the UI instead of crashing the app
                 result["error"] = f"{type(err).__name__}: {err}"
             q.put(None)

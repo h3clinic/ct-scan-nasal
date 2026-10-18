@@ -26,7 +26,7 @@ All four agents run on one served model, [NVIDIA Nemotron 3.5 Lightning 30B-A3B]
 | Agent | Model | Tools it may call | Job |
 | --- | --- | --- | --- |
 | Case | Nemotron 3.5 Lightning 30B-A3B | `set_case`, `set_patient` | Picks a real NasalSeg patient by id, or turns a description into the three case parameters; code validates them and returns errors for the model to fix |
-| Planner | Nemotron 3.5 Lightning 30B-A3B | `predict_resistance`, `formula_resistance`, `what_if`, `patient_resistance`, `patient_what_if`, `finish` | Decides which physics tools answer the request |
+| Planner | Nemotron 3.5 Lightning 30B-A3B | `predict_resistance`, `formula_resistance`, `what_if`, `patient_resistance`, `patient_what_if`, `patient_surgery_options`, `finish` | Decides which physics tools answer the request; for surgery questions, scores every combination of turbinate reduction, valve repair and septoplasty on the patient's CT airway and attaches the OpenFOAM check where one was run |
 | Critic | Nemotron 3.5 Lightning 30B-A3B | `review_results`, `check_parameters`, `report_flags` | Runs the code checks and picks which flags to show; it can cite only flag ids the checks produced |
 | Explainer | Nemotron 3.5 Lightning 30B-A3B | none | Writes the plain-language summary; code rejects any number not in the tool results and retries once, then falls back to a template written by code |
 

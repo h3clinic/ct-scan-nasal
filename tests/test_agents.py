@@ -164,3 +164,18 @@ def test_planner_that_never_finishes_keeps_its_results():
     out = agents.run_pipeline("valve 9 degrees, what if wider?", client=client)
     assert "prediction" in out["facts"]
     assert any(s["kind"] == "fallback" and s["agent"] == "planner" for s in out["log"])
+
+
+def test_surgery_tool_needs_labels_and_template_names_the_plan():
+    tools = agents.Tools(patients=__import__("pandas").DataFrame([{"patient": "P001"}]), patient_surrogate=object())
+    with pytest.raises(agents.ToolError):
+        tools.patient_surgery_options({"patient_id": "P001"})
+    facts = {"prediction": {"total_resistance": 0.2, "left_resistance": 0.4, "right_resistance": 0.4, "source": "s"},
+             "surgery": {"recommended_plan": "turbinate reduction + valve repair", "recommended_drop_pct": 6.0,
+                         "look_at_scan_plan": "turbinate reduction", "look_at_scan_drop_pct": 3.8,
+                         "openfoam_check": {"recommended_plan_drop_pct": 14.1, "best_plan": "valve repair",
+                                            "best_drop_pct": 15.0}}}
+    text = agents.template_summary(facts)
+    assert "turbinate reduction + valve repair" in text and "14.1%" in text
+    assert agents.missing_numbers(text, facts) == []
+    assert agents.plan_name("turbinate_reduction+valve_repair") == "turbinate reduction + valve repair"
