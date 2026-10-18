@@ -73,6 +73,8 @@ Everything here is simulation output. No CT images or labels are included.
 
 Rigid walls, one steady breath, no mucosa, voxel-resolution walls. The voxel septoplasty removes more airway than it adds, so it raises resistance in this model; that is a modeling artifact. NasalSeg contains duplicate scans (P002/P003, P009/P010, P080/P081).
 
+**Known issue in `patients/` (found after this release):** 9 NasalSeg label files (P025, P042, P074, P089, P100, P101, P108, P118, P129) have a vertical axis that is flipped in their header but not in their voxels. The OpenFOAM rows for those patients were computed on the upside-down airway, so their outlet cut is at the wrong end of the nasopharynx. Treat those rows as unreliable until they are re-run; the loader in the repository now corrects the orientation.
+
 ## Source and license
 
 The real airways are derived from **NasalSeg** (Zenodo [13893419](https://zenodo.org/records/13893419), DOI [10.1038/s41597-024-04176-1](https://doi.org/10.1038/s41597-024-04176-1)), licensed CC BY 4.0. This dataset is released under CC BY 4.0 as well; please credit both NasalSeg and Nasal0.

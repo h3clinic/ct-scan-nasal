@@ -142,6 +142,7 @@ No constants have been fitted yet.
 `nasal.anatomy` builds real airways from [NasalSeg](https://zenodo.org/records/13893419) (130 CT scans with voxel labels, CC BY 4.0, DOI 10.1038/s41597-024-04176-1). These are real anatomy, but their flow is still a model: rigid walls, no mucosa, a single steady breath.
 
 - **Labels:** by position in LPS coordinates, 1 and 2 are the right and left maxillary sinuses, 3 and 4 the right and left nasal cavities, and 5 the nasopharynx. `check_labels` verifies this for each scan. 3 scans (P047 to P049) fail the check; they are kept but marked `labels_ok = False`. Scans stored with a reversed axis are flipped on load.
+- **Flipped label headers:** 9 label files (P025, P042, P074, P089, P100, P101, P108, P118, P129) claim a reversed vertical axis, with an origin outside their own scan, while their voxels are stored in the CT's order. Read with that header, only about 40% of the airway label lies on air; in the CT's orientation, over 88% does (see CT to airway). `load_labels` now uses the CT's orientation when the image sits next to the labels (`images/` beside `labels/`, as NasalSeg ships them). **The OpenFOAM results above were computed before this fix**, so for these 9 patients the airway was upside down and the outlet cut sat at the wrong end of the nasopharynx; they need to be re-run.
 - **Domain:** both nasal cavities plus the nasopharynx; the sinuses are left out. Each nostril inlet is a flat cut where that cavity's cross-section first reaches 30% of its median. The outlet is a flat cut where the nasopharynx is wide (half its widest axial section). The narrow lower tail of the label is cut off because it otherwise took most of the pressure drop, and rhinomanometry measures pressure in the nasopharynx.
 - **Mesh:** every airway voxel (0.59 × 0.59 × 1.5 mm) becomes one hexahedral cell, written directly as an OpenFOAM polyMesh (median 65k cells). The mesh always passes `checkMesh` with zero non-orthogonality. The cost is stair-stepped walls.
 - **Solver:** the same simpleFoam k-omega SST setup as the tubes, with both nostrils at 150 Pa total pressure and the outlet at 0. One run gives the left and right flows. Regions are positions along each cavity (0–20% vestibule, 20–35% valve, 35–85% turbinate, the rest plus the nasopharynx choana), not anatomical landmarks.
@@ -169,23 +170,27 @@ Everything above starts from NasalSeg's expert-drawn labels. `nasal.segment` sta
 **Method:**
 1. **Air:** every voxel below a threshold (default −300 HU). Air outside the head is dropped by keeping, in each axial slice, only air enclosed by tissue.
 2. **Regions:** the air is split at its narrow necks (watershed on the distance to the wall), so a sinus joined to the nose through a thin opening becomes a separate region.
-3. **Classifier:** a random forest decides from each region's position, thickness, size and intensity whether it is airway. It is trained on the expert labels.
-4. **Labels:** the largest connected airway is kept. Walking from the nostrils backwards, the two main air regions of each coronal slice are the left and right cavities. The nasopharynx starts where air runs unbroken between them across at least 40% of the airway's height for 3 slices in a row. Sides come from the regions, not from a fixed midline, so a deviated septum does not swap them.
+3. **Palate:** the hard palate is found as bone with air directly above it, near the midline in the front of the head. Heights are measured from it, because many scans include an open mouth whose air would otherwise distort any height measured from the extent of the air. Air below the palate and in front of its back edge (the mouth) is never airway.
+4. **Classifier:** a random forest decides from each region's position, thickness, size and intensity whether it is airway. It is trained on the expert labels.
+5. **Assembly:** rejected regions that bridge two large kept pieces (for example a choana between a cavity and the nasopharynx) are added back, and the largest connected airway is kept.
+6. **Labels:** walking from the nostrils backwards, the two main air regions of each coronal slice are the left and right cavities. The nasopharynx starts at the first 3 slices in a row where air runs unbroken between the cavities over at least 40% of the airway's height. That search starts halfway back along the airway: in the 127 expert label sets that pass the checks the nasopharynx starts between 52% and 83% of the way back (median 69%). Without such a join it starts where the two separate passages end, or else at 69%. Sides come from the regions, not from a fixed midline, so a deviated septum does not swap them.
 
-**Evaluation:** 5-fold cross-validation grouped by patient (duplicate scans share a fold), on the 124 scans whose expert labels pass the checks. Every score below is on scans the classifier did not train on. Resistance is the patient surrogate's prediction for the cut airway; OpenFOAM on the automatic airways is the next step.
+**Evaluation:** 5-fold cross-validation grouped by patient (duplicate scans share a fold), on the 123 scans whose expert labels pass the checks (P047 to P049 fail the position check; P086, P098, P101 and P102 have pieces that do not connect). Every score below is on scans the classifier did not train on. Resistance is the patient surrogate's prediction for the cut airway; OpenFOAM on the automatic airways is the next step.
 
-| Air threshold | Airway Dice | Per-side Dice | Nasopharynx Dice | Resistance, auto / expert (median, IQR) | Within 25% |
+| Air threshold | Airway Dice (worst) | Per-side Dice | Nasopharynx Dice | Resistance, auto / expert (median, IQR) | Within 25% |
 | --- | --- | --- | --- | --- | --- |
-| −150 HU | 0.79 | 0.62 | 0.79 | 1.33 (1.03 to 2.17) | 35% |
-| −200 HU | 0.81 | 0.66 | 0.83 | 1.45 (1.11 to 2.37) | 34% |
-| **−300 HU** | **0.83** | **0.70** | **0.85** | 1.66 (1.23 to 2.14) | 25% |
-| −400 HU | 0.82 | 0.69 | 0.86 | 1.81 (1.39 to 2.57) | 15% |
+| −150 HU | 0.81 (0.39) | 0.63 | 0.85 | 1.37 (1.07 to 2.28) | 36% |
+| −200 HU | 0.83 (0.35) | 0.66 | 0.89 | 1.40 (1.14 to 1.97) | 31% |
+| **−300 HU** | **0.85 (0.59)** | **0.69** | **0.91** | 1.62 (1.25 to 2.37) | 24% |
+| −400 HU | 0.81 (0.01) | 0.64 | 0.88 | 2.06 (1.48 to 2.82) | 13% |
 
-- **Shape vs flow:** the threshold that best matches the experts' shape (−300 HU) is not the one that best matches their resistance. The nasal passages are only a few voxels wide, so the experts' labels include half-air edge voxels (their median intensity is about −500 HU). A stricter threshold drops those edges, narrows the passages and raises resistance. Dice alone hides this: 0.83 overlap still means a median 66% higher resistance.
-- **Failures:** 9 of 124 scans score below 0.5 airway Dice. In the worst ones the classifier picks the open mouth and oropharynx below the palate instead of the nasal airway. In a few others the cavities never pass the "joined" test, so the nasopharynx is split into left and right.
+- **Shape vs flow:** the threshold that best matches the experts' shape (−300 HU) is not the one that best matches their resistance. The nasal passages are only a few voxels wide, so the experts' labels include half-air edge voxels (their median intensity is about −500 HU). A stricter threshold drops those edges, narrows the passages and raises resistance. Dice alone hides this: 0.85 overlap still means a median 62% higher resistance.
+- **What fixed the failures:** the first version had 9 scans below 0.5 Dice. All 9 were the flipped label headers above, not segmentation errors: scored against the corrected labels, and trained on them, none is below 0.5 at −300 HU. The palate reference, the bridging step and the bounded nasopharynx search fixed the remaining cases where a cavity was dropped or the nasopharynx was split.
+- **Weakest cases:** P042, P057, P020, P070 and P045 (airway Dice 0.59 to 0.66). Their outline is mostly right, but one side is partly given to the other side or to the nasopharynx.
 
 ![Threshold sweep](docs/figures/segment_threshold_sweep.png)
 ![Typical case](docs/figures/segment_typical_case.png)
+![Flipped label headers](docs/figures/nasalseg_flipped_labels.png)
 
 ## Usage
 

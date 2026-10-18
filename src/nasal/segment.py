@@ -10,12 +10,15 @@ Method:
    per axial slice, only air enclosed by tissue is kept.
 2. The air is split into regions at its narrow necks (watershed on the distance to the
    wall), so a sinus joined to the nasal cavity through a thin opening becomes its own region.
-3. A random forest, trained on the NasalSeg expert labels, decides from each region's
+3. The hard palate is found (bone with air directly above it near the midline, in the front
+   of the head) and heights are measured from it, because an open mouth adds air far below
+   the nose and would distort any height measured from the extent of the air.
+4. A random forest, trained on the NasalSeg expert labels, decides from each region's
    position, thickness, size and intensity whether it is airway. It is evaluated with
    patient-grouped cross-validation (`nasal-segment eval`).
-4. The largest connected group of airway regions is kept and labelled: in each coronal
-   slice, air that spans the midline is nasopharynx, the rest the left or right cavity
-   (LPS: +x is the patient's left).
+5. Air below the palate and in front of its back edge (the mouth) is never airway. The
+   largest connected airway is kept and labelled into the two cavities and the nasopharynx
+   (`label_airway`).
 """
 
 from pathlib import Path
@@ -25,12 +28,16 @@ from scipy import ndimage
 
 from .anatomy import LABELS, _largest_component, load_labels
 
-AIR_THRESHOLD_HU = -300  # best of -200/-300/-400 in the grouped CV (mean airway Dice 0.82 to 0.83)
+AIR_THRESHOLD_HU = -300  # best airway Dice of -150/-200/-300/-400 HU in the grouped CV (0.85); not the best for resistance
 PEAK_MIN_DISTANCE = 3  # voxels between watershed seeds
 MIDLINE_BAND_MM = 4.0
 DUPLICATE_SCANS = {"P003": "P002", "P010": "P009", "P081": "P080"}  # identical geometry in NasalSeg
-FEATURES = ("volume_mm3", "max_dt_mm", "mean_dt_mm", "dx_mm", "min_dx_mm", "y_rel", "z_rel", "y_mm", "z_mm",
-            "mean_hu", "touches_midline", "neighbours")
+FEATURES = ("volume_mm3", "max_dt_mm", "mean_dt_mm", "dx_mm", "min_dx_mm", "y_rel", "y_mm",
+            "z_palate_mm", "below_palate_share", "y_palate_back_mm", "mean_hu", "touches_midline", "neighbours")
+BONE_HU = 200
+PALATE_BAND_MM = 10.0  # palate floor points are searched this far either side of the midline
+PALATE_FRONT = 0.6  # ... in this front share of the air's front-to-back extent
+PALATE_GAP = 3  # a floor point is bone with this many voxels of enclosed air directly above it
 SIX = ndimage.generate_binary_structure(3, 1)
 MODEL_PATH = Path("data/segment_model.joblib")
 
@@ -54,8 +61,41 @@ def midline(body: np.ndarray) -> float:
     return float(xs.mean()) if len(xs) else body.shape[0] / 2
 
 
+def palate(ct: np.ndarray, spacing: np.ndarray, inside: np.ndarray, mid: float) -> dict:
+    """Hard palate: the lowest level near the midline, in the front of the head, where bone has
+    enclosed air directly above it (the nasal floor). Returns its axial index `z` and the
+    coronal index `y_back` of its back edge; y_back is -1 when no floor is found."""
+    half = int(round(PALATE_BAND_MM / spacing[0]))
+    x0, x1 = max(int(mid) - half, 0), int(mid) + half + 1
+    ys = np.nonzero(inside.any(axis=(0, 2)))[0]
+    if not len(ys):
+        return {"z": 0, "y_back": -1}
+    y0, y1 = ys.min(), ys.min() + int(PALATE_FRONT * (ys.max() - ys.min())) + 1
+    air = inside[x0:x1, y0:y1]
+    above = np.ones_like(air)
+    for k in range(1, PALATE_GAP + 1):
+        above[:, :, :-k] &= air[:, :, k:]
+        above[:, :, -k:] = False
+    floor = (ct[x0:x1, y0:y1] > BONE_HU) & above
+    pts = np.argwhere(floor)
+    if not len(pts):
+        return {"z": 0, "y_back": -1}
+    hist = np.bincount(pts[:, 2], minlength=ct.shape[2])
+    z = int(np.nonzero(hist >= 0.1 * hist.max())[0][0])  # lowest level with a real share of the floor points
+    at = pts[np.abs(pts[:, 2] - z) <= 1]
+    return {"z": z, "y_back": int(y0 + at[:, 1].max())}
+
+
+def below_palate(shape: tuple, pal: dict) -> np.ndarray:
+    """The mouth: everything below the palate and in front of its back edge."""
+    mask = np.zeros(shape, dtype=bool)
+    if pal["y_back"] >= 0:
+        mask[:, : pal["y_back"] + 1, : pal["z"]] = True
+    return mask
+
+
 def air_regions(ct: np.ndarray, spacing: np.ndarray, threshold: float = AIR_THRESHOLD_HU) -> dict:
-    """Enclosed air split at its narrow necks: region ids, distance to wall (mm), midline."""
+    """Enclosed air split at its narrow necks: region ids, distance to wall (mm), midline, palate."""
     from skimage.feature import peak_local_max
     from skimage.segmentation import watershed
 
@@ -66,7 +106,8 @@ def air_regions(ct: np.ndarray, spacing: np.ndarray, threshold: float = AIR_THRE
     peaks = peak_local_max(dt, min_distance=PEAK_MIN_DISTANCE, labels=ndimage.label(inside)[0], exclude_border=False)
     markers = np.zeros(ct.shape, np.int32)
     markers[tuple(peaks.T)] = np.arange(1, len(peaks) + 1)
-    return {"regions": watershed(-dt, markers, mask=inside), "dt": dt, "mid": mid, "inside": inside}
+    return {"regions": watershed(-dt, markers, mask=inside), "dt": dt, "mid": mid, "inside": inside,
+            "palate": palate(ct, spacing, inside, mid)}
 
 
 def region_features(ct: np.ndarray, spacing: np.ndarray, reg: dict) -> np.ndarray:
@@ -79,8 +120,11 @@ def region_features(ct: np.ndarray, spacing: np.ndarray, reg: dict) -> np.ndarra
     ones = np.ones(lab.shape, np.int8)
     com = np.array(ndimage.center_of_mass(ones, lab, ids)).reshape(n, 3)
     dx = np.abs(np.arange(lab.shape[0]) - mid)[:, None, None] * spacing[0] * np.ones(lab.shape, np.float32)
-    ys, zs = np.nonzero(inside.any(axis=(0, 2)))[0], np.nonzero(inside.any(axis=(0, 1)))[0]
-    y0, y1, z0, z1 = ys.min(), ys.max(), zs.min(), zs.max()
+    ys = np.nonzero(inside.any(axis=(0, 2)))[0]
+    y0, y1 = ys.min(), ys.max()
+    pal = reg["palate"]
+    below = np.broadcast_to((np.arange(lab.shape[2]) < pal["z"])[None, None, :], lab.shape)
+    y_back = pal["y_back"] if pal["y_back"] >= 0 else y1
     grown = ndimage.grey_dilation(lab, size=(3, 3, 3))
     edge = (grown != lab) & (lab > 0) & (grown > 0)
     pairs = np.unique(np.stack([lab[edge], grown[edge]], axis=1), axis=0)
@@ -92,9 +136,10 @@ def region_features(ct: np.ndarray, spacing: np.ndarray, reg: dict) -> np.ndarra
         np.abs(com[:, 0] - mid) * spacing[0],
         ndimage.minimum(dx, lab, ids),
         (com[:, 1] - y0) / max(y1 - y0, 1),
-        (com[:, 2] - z0) / max(z1 - z0, 1),
         (com[:, 1] - y0) * spacing[1],
-        (com[:, 2] - z0) * spacing[2],
+        (com[:, 2] - pal["z"]) * spacing[2],
+        ndimage.mean(below, lab, ids),
+        (com[:, 1] - y_back) * spacing[1],
         ndimage.mean(ct, lab, ids),
         ndimage.sum(dx < MIDLINE_BAND_MM, lab, ids) > 0,
         neighbours,
@@ -121,60 +166,93 @@ def train(features: list[np.ndarray], targets: list[np.ndarray], seed: int = 0):
 MAJOR_SHARE = 0.15  # a coronal air region this share of the slice's largest counts as a main passage
 JOIN_HEIGHT = 0.4  # cavities have joined when air between them spans this share of the region's height,
 JOIN_SLICES = 3  # for this many coronal slices in a row (a thin bridge over the septum does not count)
+# Where the nasopharynx starts, as a share of the airway's front-to-back length. In the 127
+# NasalSeg expert labels that pass the checks it starts between 0.52 and 0.83 (median 0.69).
+PHARYNX_EARLIEST, PHARYNX_LATEST, PHARYNX_TYPICAL = 0.5, 0.85, 0.69
+
+
+def _slice_regions(sl: np.ndarray) -> dict | None:
+    comps, n = ndimage.label(sl)
+    if n == 0:
+        return None
+    ids = np.arange(1, n + 1)
+    ones = np.ones_like(comps)
+    xs = np.indices(comps.shape)[0]
+    size = ndimage.sum(ones, comps, ids)
+    return {"comps": comps, "n": n, "size": size,
+            "cx": np.array([c[0] for c in ndimage.center_of_mass(ones, comps, ids)]),
+            "xmin": ndimage.minimum(xs, comps, ids), "xmax": ndimage.maximum(xs, comps, ids),
+            "major": [i for i in np.argsort(-size) if size[i] >= MAJOR_SHARE * size.max()]}
 
 
 def label_airway(airway: np.ndarray, mid: float) -> np.ndarray:
-    """NasalSeg-style labels, walking coronal slices (axis 1) from the nostrils backwards.
+    """NasalSeg-style labels from coronal slices (axis 1), front to back, in two passes.
 
-    While the septum separates them, the two main air regions of a slice are the cavities:
-    the one at larger x is the left (LPS), and smaller regions join the nearer side. The first
-    slice where one region covers both cavities' positions starts the nasopharynx, and every
-    slice behind it is nasopharynx. Sides come from the regions, not from a fixed midline, so a
-    deviated septum or an off-centre head does not swap them; `mid` is only used before both
-    cavities have appeared."""
+    1. While the septum separates them, the two main air regions of a slice are the cavities
+       (the one at larger x is the left, LPS). The nasopharynx starts at the first run of
+       JOIN_SLICES slices where air runs unbroken between the cavities' centres over at least
+       JOIN_HEIGHT of the airway's height, searched only from PHARYNX_EARLIEST of the airway's
+       length on. If there is no such run, it starts where the two separate passages end, and
+       failing that at PHARYNX_TYPICAL (clamped to PHARYNX_LATEST).
+    2. In front of that slice, every region joins the nearer cavity; behind it, all air is
+       nasopharynx. Sides come from the regions, not from a fixed midline, so a deviated septum
+       or an off-centre head does not swap them; `mid` is only used before both cavities appear."""
+    ys = np.nonzero(airway.any(axis=(0, 2)))[0]
     labels = np.zeros(airway.shape, dtype=np.int8)
-    sides = None  # (right x, left x) of the cavities in the last slice that had both
-    merged = False
-    joined_run, pending = 0, []
-    for j in range(airway.shape[1]):
-        comps, n = ndimage.label(airway[:, j, :])
-        if n == 0:
+    if not len(ys):
+        return labels
+    y0, length = ys.min(), max(ys.max() - ys.min(), 1)
+    earliest, latest = y0 + PHARYNX_EARLIEST * length, y0 + PHARYNX_LATEST * length
+    slices, sides_at, joined = {}, {}, {}
+    sides = None
+    for j in ys:
+        s = _slice_regions(airway[:, j, :])
+        slices[j] = s
+        if s is None:
             continue
-        ids = np.arange(1, n + 1)
-        size = ndimage.sum(np.ones_like(comps), comps, ids)
-        cx = np.array([c[0] for c in ndimage.center_of_mass(np.ones_like(comps), comps, ids)])
-        xmin = ndimage.minimum(np.indices(comps.shape)[0], comps, ids)
-        xmax = ndimage.maximum(np.indices(comps.shape)[0], comps, ids)
-        out = labels[:, j, :]
-        if merged:
-            out[comps > 0] = LABELS["pharynx"]
-            continue
-        major = [i for i in np.argsort(-size) if size[i] >= MAJOR_SHARE * size.max()]
-        joined = False
-        if len(major) == 1 and sides is not None and xmin[major[0]] <= sides[0] and xmax[major[0]] >= sides[1]:
-            m = comps == major[0] + 1
+        major = s["major"]
+        if len(major) == 1 and sides is not None and s["xmin"][major[0]] <= sides[0] and s["xmax"][major[0]] >= sides[1]:
+            m = s["comps"] == major[0] + 1
             zs = np.nonzero(m.any(axis=0))[0]
             # rows where air runs unbroken from one cavity's centre to the other's: most of the
             # height at a choana, only a row or two where a thin septum leaves a gap at the floor
             span = m[int(round(sides[0])): int(round(sides[1])) + 1]
-            joined = span.all(axis=0).sum() >= JOIN_HEIGHT * (zs.max() - zs.min() + 1)
-        joined_run = joined_run + 1 if joined else 0
-        pending = pending + [j] if joined else []
-        if joined_run >= JOIN_SLICES:
-            merged = True  # the cavities have joined: nasopharynx from the first slice of the run back
-            for k in pending:
-                labels[:, k, :][labels[:, k, :] > 0] = LABELS["pharynx"]
-            out[comps > 0] = LABELS["pharynx"]
-            continue
+            joined[j] = span.all(axis=0).sum() >= JOIN_HEIGHT * (zs.max() - zs.min() + 1)
         if len(major) >= 2:
-            r, l = sorted(major[:2], key=lambda i: cx[i])
-            sides = (cx[r], cx[l])
-        for i in range(n):
-            if sides is None:
-                side = "left" if cx[i] > mid else "right"
+            r, l = sorted(major[:2], key=lambda i: s["cx"][i])
+            sides = (s["cx"][r], s["cx"][l])
+        sides_at[j] = sides
+
+    start = None
+    run = []
+    for j in ys:
+        if j >= earliest and joined.get(j, False):
+            run.append(j)
+            if len(run) >= JOIN_SLICES:
+                start = run[0]
+                break
+        else:
+            run = []
+    if start is None:  # no clear join: where the two separate passages end, within the plausible range
+        two = [j for j in ys if slices[j] is not None and len(slices[j]["major"]) >= 2]
+        after = two[-1] + 1 if two else None
+        start = after if after is not None and earliest <= after <= latest else int(round(y0 + PHARYNX_TYPICAL * length))
+
+    for j in ys:
+        s = slices[j]
+        if s is None:
+            continue
+        out = labels[:, j, :]
+        if j >= start:
+            out[s["comps"] > 0] = LABELS["pharynx"]
+            continue
+        sd = sides_at[j]
+        for i in range(s["n"]):
+            if sd is None:
+                side = "left" if s["cx"][i] > mid else "right"
             else:
-                side = "left" if abs(cx[i] - sides[1]) < abs(cx[i] - sides[0]) else "right"
-            out[comps == i + 1] = LABELS[side]
+                side = "left" if abs(s["cx"][i] - sd[1]) < abs(s["cx"][i] - sd[0]) else "right"
+            out[s["comps"] == i + 1] = LABELS[side]
     return labels
 
 
@@ -184,11 +262,39 @@ def segment(ct: np.ndarray, spacing: np.ndarray, model, threshold: float = AIR_T
     f = region_features(ct, spacing, reg)
     if not len(f):
         raise ValueError("no enclosed air found")
-    keep = np.nonzero(model.predict_proba(f)[:, 1] > 0.5)[0] + 1
-    airway = np.isin(reg["regions"], keep)
-    if not airway.any():
+    labels = assemble(reg["regions"], model.predict_proba(f)[:, 1], reg["mid"], reg["palate"])
+    if not labels.any():
         raise ValueError("no region was classified as airway")
-    return label_airway(_largest_component(airway), reg["mid"])
+    return labels
+
+
+BRIDGE_SHARE = 0.05  # kept pieces at least this share of the largest are reconnected through bridges
+
+
+def bridge(regions: np.ndarray, kept: np.ndarray, allowed: np.ndarray) -> np.ndarray:
+    """Add back rejected regions that touch two or more large kept pieces (such as a choana the
+    classifier missed between a cavity and the nasopharynx), so 'largest connected part' does
+    not throw a whole cavity away."""
+    comps, n = ndimage.label(kept, structure=SIX)
+    if n < 2:
+        return kept
+    size = ndimage.sum(kept, comps, np.arange(1, n + 1))
+    big = np.nonzero(size >= BRIDGE_SHARE * size.max())[0] + 1
+    grown = ndimage.grey_dilation(np.where(np.isin(comps, big), comps, 0), footprint=SIX)
+    touch = (regions > 0) & ~kept & allowed & (grown > 0)
+    pairs = np.unique(np.stack([regions[touch], grown[touch]], axis=1), axis=0)
+    ids, counts = np.unique(pairs[:, 0], return_counts=True) if len(pairs) else (np.array([]), np.array([]))
+    return kept | (np.isin(regions, ids[counts >= 2]) & allowed)
+
+
+def assemble(regions: np.ndarray, prob: np.ndarray, mid: float, pal: dict) -> np.ndarray:
+    """Airway regions (probability > 0.5) minus the mouth, reconnected through bridging regions,
+    largest connected part, labelled."""
+    allowed = ~below_palate(regions.shape, pal)
+    airway = np.isin(regions, np.nonzero(prob > 0.5)[0] + 1) & allowed
+    if not airway.any():
+        return np.zeros(regions.shape, np.int8)
+    return label_airway(_largest_component(bridge(regions, airway, allowed)), mid)
 
 
 def dice(a: np.ndarray, b: np.ndarray) -> float:
@@ -217,21 +323,17 @@ def prepare(ct_path: Path, label_path: Path | None, threshold: float = AIR_THRES
     that are only needed to build them."""
     ct, spacing, origin = load_ct(ct_path)
     reg = air_regions(ct, spacing, threshold)
-    case = {"regions": reg["regions"], "mid": reg["mid"], "spacing": spacing, "origin": origin,
-            "features": region_features(ct, spacing, reg)}
+    case = {"regions": reg["regions"], "mid": reg["mid"], "palate": reg["palate"], "spacing": spacing,
+            "origin": origin, "features": region_features(ct, spacing, reg)}
     if label_path is not None:
-        expert, _, _ = load_labels(label_path)
+        expert, _, _ = load_labels(label_path, like=ct_path)  # trust the image where a label header disagrees
         case["expert"] = expert.astype(np.int8)
         case["targets"] = region_targets(reg, expert)
     return case
 
 
 def predict_case(case: dict, model) -> np.ndarray:
-    keep = np.nonzero(model.predict_proba(case["features"])[:, 1] > 0.5)[0] + 1
-    airway = np.isin(case["regions"], keep)
-    if not airway.any():
-        return np.zeros(airway.shape, np.int8)
-    return label_airway(_largest_component(airway), case["mid"])
+    return assemble(case["regions"], model.predict_proba(case["features"])[:, 1], case["mid"], case["palate"])
 
 
 def domain_metrics(pred: np.ndarray, expert: np.ndarray, spacing: np.ndarray, surrogate=None) -> dict:

@@ -92,3 +92,57 @@ def test_written_labels_load_back(tmp_path):
     sg.write_labels(tmp_path / "x_seg.nrrd", expert, SPACING, origin)
     back, spacing, org = anatomy.load_labels(tmp_path / "x_seg.nrrd")
     assert (back == expert).all() and np.allclose(spacing, SPACING) and np.allclose(org, origin)
+
+
+def with_palate_and_mouth(ct):
+    """Add a bony palate under the cavities and an open mouth (enclosed air) below it."""
+    ct = ct.copy()
+    ct[12:30, 5:30, 5] = 700   # hard palate, just under the nasal floor (cavities start at z=6)
+    ct[14:28, 8:26, 2:5] = AIR  # mouth below it
+    return ct
+
+
+def test_palate_is_found_and_the_mouth_is_never_airway():
+    ct, expert = phantom()
+    ct = with_palate_and_mouth(ct)
+    reg = sg.air_regions(ct, SPACING)
+    assert reg["palate"]["z"] == 5 and 25 <= reg["palate"]["y_back"] <= 29
+    mouth = sg.below_palate(ct.shape, reg["palate"])
+    assert mouth[20, 15, 3] and not mouth[20, 35, 8] and not (mouth & (expert > 0)).any()
+    everything = np.ones(int(reg["regions"].max()))  # even if every region were called airway
+    labels = sg.assemble(reg["regions"], everything, reg["mid"], reg["palate"])
+    assert not (labels[14:28, 8:26, 2:5] > 0).any()
+
+
+def test_bridge_reconnects_a_cavity_through_a_missed_region():
+    regions = np.zeros((6, 12, 3), np.int32)
+    regions[1:5, 0:5, 1] = 1   # cavity, kept
+    regions[1:5, 5:7, 1] = 2   # choana, missed by the classifier
+    regions[1:5, 7:12, 1] = 3  # nasopharynx, kept
+    regions[0, 0:3, 0] = 4     # a small region touching only the cavity
+    kept = np.isin(regions, [1, 3])
+    out = sg.bridge(regions, kept, np.ones(regions.shape, bool))
+    assert out[regions == 2].all() and not out[regions == 4].any()
+
+
+def test_nasopharynx_falls_back_when_the_cavities_never_clearly_join():
+    _, expert = phantom()
+    air = expert > 0
+    air[14:18, 30:40, 4:14] = False  # a septum all the way back: the two sides never join
+    labels = sg.label_airway(air, mid=20.0)
+    ys = np.nonzero((labels == 5).any(axis=(0, 2)))[0]
+    assert len(ys) and 5 + sg.PHARYNX_EARLIEST * 34 <= ys.min() <= 5 + sg.PHARYNX_LATEST * 34
+
+
+def test_label_header_flipped_against_its_image_is_corrected(tmp_path):
+    nrrd = pytest.importorskip("nrrd")
+    _, expert = phantom()
+    img_hdr = {"space": "left-posterior-superior", "space directions": np.diag(SPACING),
+               "space origin": np.array([0.0, 0.0, -100.0])}
+    bad = {"space": "left-posterior-superior", "space directions": np.diag(SPACING * [1, 1, -1]),
+           "space origin": np.array([0.0, 0.0, 50.0])}  # claims a reversed z with an origin elsewhere
+    nrrd.write(str(tmp_path / "x_img.nrrd"), np.zeros(expert.shape, np.int16), img_hdr)
+    nrrd.write(str(tmp_path / "x_seg.nrrd"), expert.astype(np.uint8), bad)
+    flipped, _, _ = anatomy.load_labels(tmp_path / "x_seg.nrrd")
+    fixed, _, origin = anatomy.load_labels(tmp_path / "x_seg.nrrd", like=tmp_path / "x_img.nrrd")
+    assert (fixed == expert).all() and not (flipped == expert).all() and origin[2] == -100.0
