@@ -43,6 +43,7 @@ The agent count stays at four: more agents mostly add latency and failure points
 | Meshing | gmsh (Python API) | **Done**: `nasal.simulate.mesh_side` |
 | Airflow ground truth | OpenFOAM v2606 (`opencfd/openfoam-run:2606` in Docker), simpleFoam | **Done**: `nasal.simulate`, `nasal-simulate` |
 | Real patient airways | NasalSeg CT labels, voxel hex mesh written as an OpenFOAM polyMesh | **Done**: `nasal.anatomy`, `nasal-patients` |
+| CT to airway (no expert labels) | Threshold + watershed regions + random forest (scikit-image, scikit-learn) | **First version**: `nasal.segment`, `nasal-segment`; see CT to airway |
 | Fast stand-in model | PyTorch MLP (tubes), power law on measured geometry (patients) | **Done**: `nasal.surrogate`, `nasal-surrogate` |
 | Decision rules (standard and improved) | Plain Python functions | **Prototype**: `nasal.decision` (tubes) and `nasal.decision.patient` (real airways, verified in OpenFOAM); thresholds are placeholders pending ENT review |
 | Comparison and logging | pandas + JSON agent log | **Done**: `nasal-agents --log` |
@@ -161,6 +162,31 @@ No constants have been fitted yet.
 
 It underpredicts the most obstructed sides (about 2.6 Pa·s/cm³ in OpenFOAM, predicted about 0.34), so the agents' Critic flags any patient where the surrogate and that patient's OpenFOAM result differ by more than 25%.
 
+## CT to airway (no expert labels)
+
+Everything above starts from NasalSeg's expert-drawn labels. `nasal.segment` starts from the raw CT instead, so a new patient's scan can enter the pipeline. Its output is a label volume in the same convention (3 right cavity, 4 left, 5 nasopharynx), so the cuts, meshing and OpenFOAM run on it unchanged. The input has to be a CT volume (a stack of slices); a single 2D image cannot give a 3D airway.
+
+**Method:**
+1. **Air:** every voxel below a threshold (default −300 HU). Air outside the head is dropped by keeping, in each axial slice, only air enclosed by tissue.
+2. **Regions:** the air is split at its narrow necks (watershed on the distance to the wall), so a sinus joined to the nose through a thin opening becomes a separate region.
+3. **Classifier:** a random forest decides from each region's position, thickness, size and intensity whether it is airway. It is trained on the expert labels.
+4. **Labels:** the largest connected airway is kept. Walking from the nostrils backwards, the two main air regions of each coronal slice are the left and right cavities. The nasopharynx starts where air runs unbroken between them across at least 40% of the airway's height for 3 slices in a row. Sides come from the regions, not from a fixed midline, so a deviated septum does not swap them.
+
+**Evaluation:** 5-fold cross-validation grouped by patient (duplicate scans share a fold), on the 124 scans whose expert labels pass the checks. Every score below is on scans the classifier did not train on. Resistance is the patient surrogate's prediction for the cut airway; OpenFOAM on the automatic airways is the next step.
+
+| Air threshold | Airway Dice | Per-side Dice | Nasopharynx Dice | Resistance, auto / expert (median, IQR) | Within 25% |
+| --- | --- | --- | --- | --- | --- |
+| −150 HU | 0.79 | 0.62 | 0.79 | 1.33 (1.03 to 2.17) | 35% |
+| −200 HU | 0.81 | 0.66 | 0.83 | 1.45 (1.11 to 2.37) | 34% |
+| **−300 HU** | **0.83** | **0.70** | **0.85** | 1.66 (1.23 to 2.14) | 25% |
+| −400 HU | 0.82 | 0.69 | 0.86 | 1.81 (1.39 to 2.57) | 15% |
+
+- **Shape vs flow:** the threshold that best matches the experts' shape (−300 HU) is not the one that best matches their resistance. The nasal passages are only a few voxels wide, so the experts' labels include half-air edge voxels (their median intensity is about −500 HU). A stricter threshold drops those edges, narrows the passages and raises resistance. Dice alone hides this: 0.83 overlap still means a median 66% higher resistance.
+- **Failures:** 9 of 124 scans score below 0.5 airway Dice. In the worst ones the classifier picks the open mouth and oropharynx below the palate instead of the nasal airway. In a few others the cavities never pass the "joined" test, so the nasopharynx is split into left and right.
+
+![Threshold sweep](docs/figures/segment_threshold_sweep.png)
+![Typical case](docs/figures/segment_typical_case.png)
+
 ## Usage
 
 ```bash
@@ -202,6 +228,16 @@ pip install -e ".[sim,patients]"
 nasal-patients measure --labels nasalseg/labels                          # geometry of every patient -> data/patients.csv
 nasal-patients simulate --labels nasalseg/labels --ids P001 --procs 8    # OpenFOAM -> data/patient_sim.csv
 nasal-surrogate --patients --sim data/patient_sim.csv                     # -> data/patient_surrogate.json
+```
+
+From raw CT instead of expert labels (`pip install -e ".[segment]"`; NasalSeg ships the CT images next to the labels):
+
+```bash
+nasal-segment eval --images nasalseg/images --labels nasalseg/labels --thresholds -150 -200 -300 -400  # grouped CV -> data/segment_eval.csv
+nasal-segment train --images nasalseg/images --labels nasalseg/labels                                  # -> data/segment_model.joblib
+nasal-segment run --ct new_scan.nrrd --out new_scan_seg.nrrd                                            # one scan -> NasalSeg-style labels
+nasal-segment holdout --images nasalseg/images --labels nasalseg/labels --ids P022 P064                # train without them, segment them
+nasal-patients simulate --labels data/segment_auto --ids P022 P064 --out data/segment_auto_sim.csv     # OpenFOAM on the automatic airways
 ```
 
 `simulate` skips patients already in its output, so it can resume, and logs a failed patient and moves on. Each patient takes several minutes on 4 cores (we did not time them individually). We ran 12 batches of `--procs 4` on a 48-core Brev instance, each with its own `--out`, and trained on all the files together. With `data/patient_sim.csv` and `data/patient_surrogate.json` present, `nasal-agents` also accepts requests about a patient by id (for example "patient P022: what if the left narrowest section were 30% wider?").
