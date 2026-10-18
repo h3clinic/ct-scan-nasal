@@ -1,4 +1,4 @@
-"""Step 6 demo: a real patient's 3D airway colored by resistance, instant what-ifs, and the
+"""Nasal0 demo (step 6): a patient's 3D airway colored by resistance, instant what-ifs, and the
 Nemotron agents running live.
 
 Run `nasal-demo --labels <NasalSeg labels folder>` after `nasal-patients simulate` and
@@ -19,7 +19,6 @@ import pandas as pd
 from . import agents, anatomy
 from .params import REGIONS, SIDES
 
-DISCLAIMER = "Real CT airways (NasalSeg, CC BY 4.0); flow is a rigid-wall steady model."
 DEFAULT_PATIENT = "P022"  # one side has three times the other's resistance
 DEFAULT_QUESTION = "Which side is harder to breathe through, and what if the narrower side's narrowest section were widened by 30%?"
 
@@ -140,16 +139,16 @@ def build_app(labels_dir: Path, sim_path: Path = agents.PATIENTS_PATH, model_pat
         base = surrogate.predict(row)
         changed = bool(widen_left or widen_right)
         shown = predicted if (source == "Surrogate" or changed) else row
-        label = "surrogate what-if" if changed else source
+        label = "what-if" if changed else source
         fig = resistance_figure(airway_surface(label_file[pid]), region_values(shown),
-                                f"{pid}: resistance by region ({label}), total {shown['total_resistance']:.3f} Pa·s/cm³")
-        info = (f"**{pid}** · OpenFOAM total **{row['total_resistance']:.3f}** Pa·s/cm³ "
-                f"(left {row['left_resistance']:.3f}, right {row['right_resistance']:.3f}) · "
-                f"surrogate {base['total_resistance']:.3f} ({100 * (base['total_resistance'] / row['total_resistance'] - 1):+.0f}%) "
-                f"in **{ms:.2f} ms** vs one OpenFOAM run of {int(row['iterations'])} iterations on {int(row['cells']):,} cells.")
+                                f"{pid} · {label} · {shown['total_resistance']:.3f} Pa·s/cm³")
+        info = (f"**OpenFOAM** {row['total_resistance']:.3f} · L {row['left_resistance']:.3f} · R {row['right_resistance']:.3f}  \n"
+                f"**Surrogate** {base['total_resistance']:.3f} "
+                f"({100 * (base['total_resistance'] / row['total_resistance'] - 1):+.0f}%) · **{ms:.2f} ms**")
         if changed:
-            info += (f"\n\n**What-if** (surrogate): left narrowest {widen_left:+.0f}%, right {widen_right:+.0f}% → total "
-                     f"**{predicted['total_resistance']:.3f}** ({100 * (predicted['total_resistance'] / base['total_resistance'] - 1):+.1f}%).")
+            info += (f"  \n**What-if** L {widen_left:+.0f}% · R {widen_right:+.0f}% → "
+                     f"**{predicted['total_resistance']:.3f}** "
+                     f"({100 * (predicted['total_resistance'] / base['total_resistance'] - 1):+.1f}%)")
         return fig, comparison_table(row, base), info
 
     def ask(pid, question):
@@ -165,7 +164,7 @@ def build_app(labels_dir: Path, sim_path: Path = agents.PATIENTS_PATH, model_pat
             q.put(None)
 
         threading.Thread(target=work, daemon=True).start()
-        yield "_Agents starting…_", ""
+        yield "_Running…_", ""
         while True:
             step = q.get()
             if step is None:
@@ -175,31 +174,31 @@ def build_app(labels_dir: Path, sim_path: Path = agents.PATIENTS_PATH, model_pat
                 steps.append(line)
                 yield "\n".join(steps), ""
         if "error" in result:
-            yield "\n".join(steps), f"**Agents failed:** {result['error']} (is the vLLM endpoint up at {agents.DEFAULT_URL}?)"
+            yield "\n".join(steps), f"**Agents failed:** {result['error']} ({agents.DEFAULT_URL})"
             return
         out = result["out"]
         flags = "".join(f"\n- {f['text']}" for f in out["facts"]["flags"])
-        yield ("\n".join(steps) + f"\n\n_Total {out['seconds']} s · summary from {out['summary_source']}_",
+        yield ("\n".join(steps) + f"\n\n_{out['seconds']} s · {out['summary_source']}_",
                f"{as_markdown(out['summary'])}\n\n**Flags**{as_markdown(flags)}")
 
-    with gr.Blocks(title="Nasal Airflow Demo") as app:
-        gr.Markdown(f"## Nasal airflow: real patients, OpenFOAM, surrogate and Nemotron agents\n_{DISCLAIMER}_")
+    with gr.Blocks(title="Nasal0") as app:
+        gr.Markdown("# Nasal0")
         with gr.Row():
-            pid = gr.Dropdown(ids, value=default, label="Patient (NasalSeg)")
-            source = gr.Radio(["OpenFOAM", "Surrogate"], value="OpenFOAM", label="Color by")
-            widen_left = gr.Slider(-30, 60, value=0, step=5, label="Left narrowest section change (%)")
-            widen_right = gr.Slider(-30, 60, value=0, step=5, label="Right narrowest section change (%)")
+            pid = gr.Dropdown(ids, value=default, label="Patient")
+            source = gr.Radio(["OpenFOAM", "Surrogate"], value="OpenFOAM", label="Color")
+            widen_left = gr.Slider(-30, 60, value=0, step=5, label="Left narrowest (%)")
+            widen_right = gr.Slider(-30, 60, value=0, step=5, label="Right narrowest (%)")
         with gr.Row():
-            plot = gr.Plot(label="3D airway, resistance map")
+            plot = gr.Plot(label="Resistance map")
             with gr.Column():
                 info = gr.Markdown()
-                table = gr.Dataframe(label="OpenFOAM vs surrogate (Pa·s/cm³)", interactive=False)
-        gr.Markdown("### Ask the agents (Nemotron 3.5 Lightning 30B-A3B on vLLM)")
+                table = gr.Dataframe(label="Pa·s/cm³", interactive=False)
+        gr.Markdown("### Agents · Nemotron 3.5 Lightning")
         with gr.Row():
-            question = gr.Textbox(value=DEFAULT_QUESTION, label="Question about this patient", scale=4)
+            question = gr.Textbox(value=DEFAULT_QUESTION, label="Ask", scale=4)
             go_btn = gr.Button("Run agents", variant="primary", scale=1)
         with gr.Row():
-            steps = gr.Markdown(label="Agent steps")
+            steps = gr.Markdown(label="Steps")
             answer = gr.Markdown(label="Answer")
         inputs = [pid, widen_left, widen_right, source]
         for comp in inputs:
@@ -212,7 +211,7 @@ def build_app(labels_dir: Path, sim_path: Path = agents.PATIENTS_PATH, model_pat
 def main(argv: list[str] | None = None) -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Step 6 demo (Gradio).")
+    parser = argparse.ArgumentParser(description="Nasal0 demo (Gradio).")
     parser.add_argument("--labels", type=Path, required=True, help="NasalSeg labels folder (*_seg.nrrd)")
     parser.add_argument("--sim", type=Path, default=agents.PATIENTS_PATH, help="patient_sim.csv from nasal-surrogate --patients")
     parser.add_argument("--model", type=Path, default=agents.PATIENT_SURROGATE_PATH)

@@ -1,8 +1,8 @@
-# ct-scan-nasal: NVIDIA x Red Hat Small Models Hack submission
+# Nasal0: NVIDIA x Red Hat Small Models Hack submission
 
 ## Pitch
 
-A blocked nose is usually judged by eye: a surgeon looks at a CT scan, sees a bent septum or big turbinates, and operates on what looks wrong. **ct-scan-nasal** asks where the air actually loses pressure.
+A blocked nose is usually judged by eye: a surgeon looks at a CT scan, sees a bent septum or big turbinates, and operates on what looks wrong. **Nasal0** asks where the air actually loses pressure.
 
 - **Real airways:** it builds airways from 130 real CT scans (NasalSeg) and simulates the airflow in OpenFOAM.
 - **Fast stand-in:** a surrogate fitted to those simulations answers in a fraction of a millisecond, compared with minutes for a simulation.
@@ -36,25 +36,9 @@ When we tested virtual surgery on 10 obstructed real airways, the map-driven pla
 
 Every language model is 30B parameters or fewer, under the 33B limit.
 
-## Demo script (about 4 minutes)
+## Demo script
 
-Before going live:
-1. Start the vLLM server on the Brev H100 and open the tunnel to port 8000 (README → Agents).
-2. Run `nasal-demo --labels <NasalSeg labels>`.
-3. Run one request first so the model is warm.
-
-| Time | Show | Say |
-| --- | --- | --- |
-| 0:00 | The patient picker | "These are 130 real airways from public CT scans." |
-| 0:20 | P022's 3D airway, colored by OpenFOAM resistance; rotate it | "This is the real nasal cavity of one patient. Red is where the pressure is lost. The left side carries three times the right's resistance, and most of it sits at the back of the left cavity." |
-| 0:50 | The table: OpenFOAM against the surrogate | "One simulation takes minutes on a cluster. The surrogate takes a fraction of a millisecond, and the table shows its error honestly: here it misses by 45%." |
-| 1:20 | Left-narrowest slider to +30% | "A what-if: widen the narrowest section. The map updates instantly through the surrogate." |
-| 1:50 | "Run agents" with the default question | "Four Nemotron 3.5 Lightning agents, 3B active parameters, served with vLLM on Brev. Watch each tool call stream in. The models choose tools; every number comes from code." |
-| 2:30 | The finished summary and flags | "The Critic flagged that the surrogate and the simulation disagree for this patient, and the Explainer's numbers passed a code check. If they hadn't, code would have written the summary." |
-| 3:00 | The step 5 chart (README or the gallery) | "We ran virtual surgery in OpenFOAM on 10 obstructed airways. The plan chosen from the resistance map matched the best plan in all 10; the look-at-the-scan rule did in 1." |
-| 3:40 | Limits | "Rigid walls, steady flow, rules not reviewed by an ENT. The next step is a clinician's review." |
-
-Backup if the endpoint is down: the 3D map, sliders and table work offline; show `data/agent_log_patient.json` or the agents image in the gallery.
+See [PRESENTATION.md](PRESENTATION.md): setup checklist, the word-for-word 4-minute script with clicks, backups and likely questions.
 
 ## Honest limits
 
