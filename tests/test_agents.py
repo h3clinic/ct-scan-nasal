@@ -138,3 +138,14 @@ def test_patient_mode_selects_patient_and_runs_patient_tools():
     assert out["facts"]["what_if"][0]["total_resistance_after"] < before
     assert "Real CT airway" in out["facts"]["flags"][-1]["text"]
     assert out["summary_source"].startswith("template") and str(before) in out["summary"]
+
+
+def test_agent_eval_scores_a_run():
+    from nasal import agent_eval
+
+    client = ScriptedClient(happy_script(["Total resistance is 0.0001."] * 2))
+    probe = agent_eval.Probe("narrow valve", lambda case: case.get("valve_angle_deg") == 9.0, wants_what_if=True)
+    result = agent_eval.run([probe], client=client)
+    s = result["summary"]
+    assert s["completed"] == 1 and s["case_correct"] == 1 and s["what_if_when_asked"] == "1/1"
+    assert s["explainer_template_fallback"] == 1 and s["tool_errors_sent_back"] == 0

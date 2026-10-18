@@ -4,6 +4,21 @@
 
 A prototype for evaluating nasal airway obstruction. It builds airway geometries (parametric tubes, and real patient airways from CT), estimates airflow resistance by region, and wraps the tools in a small-model agent loop that explains the results. Every language model stays at or under 33B parameters. Physics and decision rules are plain code, never a language model, so every number traces back to a formula or a simulation.
 
+## At a glance
+
+Built for the NVIDIA x Red Hat Small Models Hack; see [SUBMISSION.md](SUBMISSION.md) for the pitch, track mapping and demo script.
+
+- **Real anatomy:** 130 NasalSeg CT airways, 126 simulated in OpenFOAM on NVIDIA Brev (median nasal resistance 0.146 Pa·s/cm³ at 150 Pa).
+- **Fast surrogate:** under 0.2 ms per prediction, 16.3% mean side error (cross-validated) against 29.9% for "average patient".
+- **Four agents** on NVIDIA Nemotron 3.5 Lightning 30B-A3B (3B active), served with vLLM. On 16 fixed probes (`nasal-agents --eval`), all 16 runs completed and 15 set the right case. 3 invalid tool calls out of 98 were caught by code and recovered, and every number the Explainer wrote either passed the code check or was replaced by the code template.
+- **Virtual surgery, verified in OpenFOAM:** on 10 obstructed real airways, Workflow++ reached the best plan's drop for 10 of 10, the standard rule for 1 of 10.
+- **Demo:** `nasal-demo`, a 3D resistance map of a real patient with what-if sliders and live agent steps.
+
+```bash
+pip install -e ".[dev,sim,surrogate,agents,patients,demo]"
+pytest
+```
+
 ## Design
 
 ### Agents (small language models)
@@ -38,7 +53,7 @@ The agent count stays at four: more agents mostly add latency and failure points
 ## Workflow
 
 1. **Generate cases**: the geometry tool makes a few hundred synthetic patients with known parameters. *(done)* Real airways from 130 NasalSeg CT scans are also built and measured. *(done; see Real patients)*
-2. **Simulate**: mesh each shape and run OpenFOAM for resistance by region. This takes the longest, so it starts first. *(done for a subset; see below)*
+2. **Simulate**: mesh each shape and run OpenFOAM for resistance by region. This takes the longest, so it starts first. *(done: 106 idealized cases and 126 real patients)*
 3. **Train the fast model** on the simulation results, recording its error and speedup. *(done; see Fast surrogate)*
 4. **Wire up the agents**: the Case agent sets parameters, the Planner calls the fast model, the formula and what-if tools, the Critic checks the results and the Explainer writes the summary. *(done; the placeholder decision rules are not wired in yet)*
 5. **Verify with real simulation**: for a sample of cases, run virtual surgery in OpenFOAM and compare both rules' plans against it. This produces the results table. *(done on 10 real airways; see Step 5)*
@@ -227,7 +242,15 @@ pip install -e ".[agents,surrogate]"
 nasal-agents "Narrow valve, maybe 9 degrees, septum bends left. What if the valve were widened to 15 degrees?"
 ```
 
-It prints the summary and writes every model turn, tool call, tool result and check to `data/agent_log.json`. `NASAL_LLM_URL` and `NASAL_LLM_MODEL` point it at another OpenAI-compatible server. `--thinking` turns on the model's reasoning mode, which is off by default for speed. The predictions use `data/surrogate.pt` when it exists and the formula otherwise; the Critic flags which one was used. The agent tests use a scripted stand-in for the model and need no server.
+It prints the summary and writes every model turn, tool call, tool result and check to `data/agent_log.json`.
+
+`nasal-agents --eval` runs 16 fixed probes (`nasal.agent_eval`), scores them in code and writes `data/agent_eval.json`. The probes include patient ids, a what-if, an unknown patient, an out-of-range valve angle and plain descriptions. Our run against the Brev endpoint:
+
+- **Runs:** 16/16 completed, with a median of 5.9 s per four-agent run.
+- **Case choice:** 15/16 set the right case. The miss: "septum to the right 0.5" became +0.5, which means the left in this project, and no code check can catch a wrong sign.
+- **What-ifs:** 6/6 run when the request asked for one.
+- **Tool calls:** 3 invalid out of 98, all caught by code and sent back; the model then recovered to a valid case.
+- **Explainer:** 14/16 passed the number check the first time; the other 2 were replaced by the code template. `NASAL_LLM_URL` and `NASAL_LLM_MODEL` point it at another OpenAI-compatible server. `--thinking` turns on the model's reasoning mode, which is off by default for speed. The predictions use `data/surrogate.pt` when it exists and the formula otherwise; the Critic flags which one was used. The agent tests use a scripted stand-in for the model and need no server.
 
 ## Surgical decision rules (Workflow++ prototype)
 

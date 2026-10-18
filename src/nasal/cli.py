@@ -246,11 +246,26 @@ def agents_main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Run the Case, Planner, Critic and Explainer agents on a description. Research only."
     )
-    parser.add_argument("request", help='e.g. "narrow nasal valve, septum bent to the left; what if the valve is widened?"')
+    parser.add_argument("request", nargs="?", default="", help='e.g. "narrow nasal valve, septum bent to the left; what if the valve is widened?"')
     parser.add_argument("--surrogate", type=Path, default=agents.SURROGATE_PATH)
     parser.add_argument("--log", type=Path, default=Path("data/agent_log.json"))
     parser.add_argument("--thinking", action="store_true", help="turn on the model's reasoning mode")
+    parser.add_argument("--eval", action="store_true",
+                        help="ignore REQUEST and run the fixed reliability probes; writes data/agent_eval.json")
     args = parser.parse_args(argv)
+
+    if args.eval:
+        from . import agent_eval
+
+        patients, patient_surrogate = agents.load_patients()
+        result = agent_eval.run(surrogate=agents.load_surrogate(args.surrogate), thinking=args.thinking,
+                                patients=patients, patient_surrogate=patient_surrogate)
+        out = args.log.with_name("agent_eval.json")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+        print(agent_eval.main_report(result))
+        print(f"details: {out}")
+        return
 
     patients, patient_surrogate = agents.load_patients()
     out = agents.run_pipeline(args.request, surrogate=agents.load_surrogate(args.surrogate), thinking=args.thinking,
