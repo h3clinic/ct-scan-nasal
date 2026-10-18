@@ -30,7 +30,7 @@ The agent count stays at four: more agents mostly add latency and failure points
 | Airflow ground truth | OpenFOAM v2606 (`opencfd/openfoam-run:2606` in Docker), simpleFoam | **Done**: `nasal.simulate`, `nasal-simulate` |
 | Real patient airways | NasalSeg CT labels, voxel hex mesh written as an OpenFOAM polyMesh | **Done**: `nasal.anatomy`, `nasal-patients` |
 | Fast stand-in model | PyTorch MLP (tubes), power law on measured geometry (patients) | **Done**: `nasal.surrogate`, `nasal-surrogate` |
-| Decision rules (standard and improved) | Plain Python functions | **Prototype**: `nasal.decision`, thresholds are placeholders pending ENT review |
+| Decision rules (standard and improved) | Plain Python functions | **Prototype**: `nasal.decision` (tubes) and `nasal.decision.patient` (real airways, verified in OpenFOAM); thresholds are placeholders pending ENT review |
 | Comparison and logging | pandas + JSON agent log | **Done**: `nasal-agents --log` |
 | Demo | Gradio + Plotly | **Done**: `nasal.demo`, `nasal-demo` |
 | Model serving | vLLM `v0.27.1` on NVIDIA Brev (1x H100), OpenAI-style endpoint | **Done**: see Agents usage |
@@ -41,7 +41,7 @@ The agent count stays at four: more agents mostly add latency and failure points
 2. **Simulate**: mesh each shape and run OpenFOAM for resistance by region. This takes the longest, so it starts first. *(done for a subset; see below)*
 3. **Train the fast model** on the simulation results, recording its error and speedup. *(done; see Fast surrogate)*
 4. **Wire up the agents**: the Case agent sets parameters, the Planner calls the fast model, the formula and what-if tools, the Critic checks the results and the Explainer writes the summary. *(done; the placeholder decision rules are not wired in yet)*
-5. **Verify with real simulation**: for a sample of cases, run virtual surgery in OpenFOAM and compare both rules' plans against it. This produces the results table.
+5. **Verify with real simulation**: for a sample of cases, run virtual surgery in OpenFOAM and compare both rules' plans against it. This produces the results table. *(done on 10 real airways; see Step 5)*
 6. **Demo**: sliders change the anatomy, the resistance map updates, and agent steps appear live with surrogate error and speed. *(done for real patients; see Demo)*
 7. **Doctor's check**: at least one ENT review of the rules, plus the research-only label.
 
@@ -241,6 +241,35 @@ It prints the summary and writes every model turn, tool call, tool result and ch
 - **Suggested course for one case** (`recommend.py`): `python -m nasal.decision.recommend --valve-angle-deg 9 --turbinate-scale 1.3 --septum-deviation 0.6` prints JSON with the research-only label, the regional map before surgery, the Workflow++ suggestion with a code-written reason for each procedure, the standard plan for comparison, every option ranked by modeled resistance drop, and what is not modeled. It uses the trained surrogate (`data/surrogate.pt`) when present, otherwise the formula. It is not wired into `nasal.agents`.
 
 The evaluator is pluggable (`evaluator=`). It defaults to the uncalibrated formula baseline, so the reclassification rates it prints describe the baseline, not real noses. The surrogate or OpenFOAM can be passed in once they are available. The baseline has no inferior/middle/superior flow split or wall shear yet, so the Workflow++ plan's flow-balance and ENS-risk limits are not implemented.
+
+### Step 5: virtual surgery on real airways, verified in OpenFOAM
+
+`nasal.decision.patient` applies the procedures to a patient's voxel airway. Each procedure adds or moves one voxel layer (about 0.6 mm). These are modeling choices, not surgical prescriptions.
+
+- **Valve repair:** widens both valve regions (20–35% of each cavity's length) sideways and vertically.
+- **Turbinate reduction:** pushes both cavities' lateral wall outward in the turbinate region (35–85%).
+- **Septoplasty:** removes the wider cavity's medial layer and grows the narrower one toward it.
+- **Limits:** growth never touches the other cavity or crosses the nostril or outlet cuts, and the airway is kept as one connected piece.
+
+Both rules are applied per patient:
+
+- **Standard rule:** turbinate reduction, plus septoplasty when one side's mean cross-section is over 1.3 times the other's (a placeholder threshold).
+- **Workflow++:** scores all 7 plans with the patient surrogate on the operated airway's measured geometry.
+
+`nasal-patients surgery --labels nasalseg/labels --ids P022 --procs 4` then runs OpenFOAM on the untouched airway and on all 7 plans, and prints how each rule's choice compares.
+
+We ran the 12 most obstructed patients whose labels pass the position check. 2 pairs turned out to be duplicate scans in NasalSeg (P009/P010 and P080/P081 have identical geometry), so the results below cover 10 distinct airways, 8 OpenFOAM runs each:
+
+| Plan chosen by | Mean OpenFOAM resistance drop | Within 90% of the best plan's drop |
+| --- | --- | --- |
+| Workflow++ (surrogate) | 10.2% | 10 of 10 (the best plan itself in 8) |
+| Standard rule | 7.2% | 1 of 10 |
+| Best plan per patient (OpenFOAM) | 10.2% | |
+
+- **Best plan:** turbinate reduction with valve repair was best or near-best for every patient (mean drop 10.2%, up to 26.7%). Turbinate reduction alone averaged 7.8% and valve repair alone 1.9%.
+- **Septoplasty raised resistance** in this model (mean −7.9% alone). The voxel version removes more airway than it adds, so this is an artifact of the model, not a finding about septoplasty. Workflow++ never chose it; the standard rule chose it for 2 patients.
+- **The surrogate ranks plans better than it sizes them:** its predicted drops correlate only 0.47 with OpenFOAM's, with a mean error of 6.1 percentage points. It still picked the right plan, because the plans' differences were large.
+- **Limits:** this is a 10-patient sample of the most obstructed airways, with one-layer changes, steady flow and rigid walls. The rules' thresholds are unreviewed placeholders, so none of this is a clinical recommendation.
 
 ## Keeping docs in sync
 

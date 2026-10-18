@@ -14,7 +14,7 @@ from nasal.params import REGIONS, SIDES  # noqa: E402
 
 def test_every_airway_voxel_gets_a_region():
     tags, _ = anatomy.airway(fake_labels())
-    names = demo.region_of_voxels(tags)
+    names = anatomy.region_names(tags)
     assert (names[tags > 0] != "").all() and (names[tags == 0] == "").all()
     expected = {f"{s}_{r}" for s in SIDES for r in REGIONS}
     assert set(names[tags > 0]) == expected

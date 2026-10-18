@@ -133,6 +133,29 @@ def measure(tags: np.ndarray, spacing: np.ndarray) -> dict:
     return out
 
 
+def region_names(tags: np.ndarray) -> np.ndarray:
+    """Label every airway voxel '<side>_<region>' using the same length fractions as
+    `read_patient`; nasopharynx voxels count as choana of the nearer side."""
+    names = np.full(tags.shape, "", dtype=object)
+    for side in SIDES:
+        m = tags == LABELS[side]
+        js = np.nonzero(m.any(axis=(0, 2)))[0]
+        j0, j1 = js.min(), js.max()
+        bounds = [j0 + f * (j1 - j0) for f in REGION_FRACTIONS]
+        jgrid = np.broadcast_to(np.arange(tags.shape[1])[None, :, None], tags.shape)
+        idx = np.searchsorted(bounds, jgrid, side="right")
+        for i, region in enumerate(REGIONS):
+            names[m & (idx == i)] = f"{side}_{region}"
+    pharynx = tags == LABELS["pharynx"]
+    if pharynx.any():
+        xs = {side: np.argwhere(tags == LABELS[side])[:, 0].mean() for side in SIDES}
+        xgrid = np.broadcast_to(np.arange(tags.shape[0])[:, None, None], tags.shape)
+        nearer_left = np.abs(xgrid - xs["left"]) < np.abs(xgrid - xs["right"])
+        names[pharynx & nearer_left] = "left_choana"
+        names[pharynx & ~nearer_left] = "right_choana"
+    return names
+
+
 # ---------------------------------------------------------------- voxel mesh
 
 # Quad corners (as node offsets from the cell's own (i, j, k)) for each outward face direction,
@@ -232,6 +255,14 @@ def write_patient_case(case_dir: Path, label_path: Path, processes: int = 4, tur
     """Write a complete OpenFOAM case for one patient; returns its geometry record."""
     labels, spacing, origin = load_labels(label_path)
     tags, cuts = airway(labels)
+    return {**write_airway_case(case_dir, tags, spacing, origin, cuts, processes, turbulence),
+            "labels_ok": check_labels(labels)}
+
+
+def write_airway_case(case_dir: Path, tags: np.ndarray, spacing: np.ndarray, origin: np.ndarray, cuts: dict,
+                      processes: int = 4, turbulence: str = "kOmegaSST") -> dict:
+    """Write a complete OpenFOAM case for an airway tag volume (for example after
+    virtual surgery); returns its geometry record."""
     mesh = voxel_mesh(tags, spacing, origin, cuts)
     if case_dir.exists():
         shutil.rmtree(case_dir)
@@ -243,7 +274,7 @@ def write_patient_case(case_dir: Path, label_path: Path, processes: int = 4, tur
     write_polymesh(mesh, case_dir / "constant" / "polyMesh")
     np.savez_compressed(case_dir / "airway.npz", tags=tags, spacing=spacing, origin=origin,
                         cuts=np.array([cuts["inlet_left"], cuts["inlet_right"], cuts["outlet"]]))
-    return {"cells": mesh["n_cells"], "labels_ok": check_labels(labels), **measure(tags, spacing),
+    return {"cells": mesh["n_cells"], **measure(tags, spacing),
             **{f"{p['name']}_faces": p["n"] for p in mesh["patches"]}}
 
 

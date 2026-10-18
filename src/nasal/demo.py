@@ -24,29 +24,6 @@ DEFAULT_PATIENT = "P022"  # one side has three times the other's resistance
 DEFAULT_QUESTION = "Which side is harder to breathe through, and what if the narrower side's narrowest section were widened by 30%?"
 
 
-def region_of_voxels(tags: np.ndarray) -> dict[tuple[int, int, int], str]:
-    """Label every airway voxel '<side>_<region>' using the same length fractions as
-    `anatomy.read_patient`; nasopharynx voxels count as choana of the nearer side."""
-    names = np.full(tags.shape, "", dtype=object)
-    for side in SIDES:
-        m = tags == anatomy.LABELS[side]
-        js = np.nonzero(m.any(axis=(0, 2)))[0]
-        j0, j1 = js.min(), js.max()
-        bounds = [j0 + f * (j1 - j0) for f in anatomy.REGION_FRACTIONS]
-        jgrid = np.broadcast_to(np.arange(tags.shape[1])[None, :, None], tags.shape)
-        idx = np.searchsorted(bounds, jgrid, side="right")
-        for i, region in enumerate(REGIONS):
-            names[m & (idx == i)] = f"{side}_{region}"
-    pharynx = tags == anatomy.LABELS["pharynx"]
-    if pharynx.any():
-        xs = {side: np.argwhere(tags == anatomy.LABELS[side])[:, 0].mean() for side in SIDES}
-        xgrid = np.broadcast_to(np.arange(tags.shape[0])[:, None, None], tags.shape)
-        nearer_left = np.abs(xgrid - xs["left"]) < np.abs(xgrid - xs["right"])
-        names[pharynx & nearer_left] = "left_choana"
-        names[pharynx & ~nearer_left] = "right_choana"
-    return names
-
-
 @lru_cache(maxsize=16)
 def airway_surface(label_path: str, step: int = 1) -> dict:
     """Airway surface (mm) and each vertex's '<side>_<region>' name for one patient."""
@@ -54,7 +31,7 @@ def airway_surface(label_path: str, step: int = 1) -> dict:
 
     labels, spacing, origin = anatomy.load_labels(Path(label_path))
     tags, _ = anatomy.airway(labels)
-    names = region_of_voxels(tags)
+    names = anatomy.region_names(tags)
     padded = np.pad(tags > 0, 1).astype(np.float32)
     verts, faces, _, _ = measure.marching_cubes(padded, 0.5, step_size=step)
     vox = np.clip(np.rint(verts - 1).astype(int), 0, np.array(tags.shape) - 1)

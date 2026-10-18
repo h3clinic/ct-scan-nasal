@@ -137,6 +137,49 @@ def surrogate_main(argv: list[str] | None = None) -> None:
     print(f"model: {args.model}, report: {args.report}")
 
 
+def _patient_surgery(args, files) -> None:
+    """OpenFOAM on the untouched airway and on every procedure plan, plus both rules' plans."""
+    from . import anatomy
+    from .decision import patient as ps
+    from .simulate import run_case
+    from .surrogate import PatientSurrogate
+
+    surrogate = PatientSurrogate.load(args.model)
+    rows = pd.read_csv(args.out).to_dict("records") if args.out.exists() else []
+    seen = {(r["patient"], r["plan"]) for r in rows}
+    for f in files:
+        pid = f.name.split("_")[0]
+        try:
+            labels, spacing, origin = anatomy.load_labels(f)
+            tags, cuts = anatomy.airway(labels)
+            evaluate = ps.surrogate_evaluator(surrogate, spacing)
+            plus_plus, predicted = ps.plus_plus_rule_patient(tags, cuts, spacing, evaluate)
+            standard = ps.standard_rule_patient(anatomy.measure(tags, spacing))
+        except Exception as err:
+            print(f"{pid}: FAILED {type(err).__name__}: {err}", flush=True)
+            continue
+        for plan in [(), *ps.candidate_plans()]:
+            name = ps.label(plan)
+            if (pid, name) in seen:
+                continue
+            try:
+                operated = ps.apply_patient_plan(tags, cuts, spacing, plan)
+                case_dir = args.work / pid / name
+                geometry = anatomy.write_airway_case(case_dir, operated, spacing, origin, cuts, args.procs)
+                run_case(case_dir)
+                result = anatomy.read_patient(case_dir)
+            except Exception as err:  # one diverged plan must not stop the rest
+                print(f"{pid} {name}: FAILED {type(err).__name__}: {str(err).splitlines()[0] if str(err) else ''}", flush=True)
+                continue
+            rows.append({"patient": pid, "plan": name, "added_voxels": int((operated > 0).sum() - (tags > 0).sum()),
+                         "standard_plan": ps.label(standard), "plus_plus_plan": ps.label(plus_plus),
+                         "surrogate_total": predicted[plan], **geometry, **result})
+            pd.DataFrame(rows).to_csv(args.out, index=False)
+            print(f"{pid} {name}: OpenFOAM {result['total_resistance']:.4f}, surrogate {predicted[plan]:.4f}", flush=True)
+    if rows:
+        print(ps.compare_surgery(pd.DataFrame(rows)).round(3).to_string())
+
+
 def patients_main(argv: list[str] | None = None) -> None:
     from . import anatomy
 
@@ -144,7 +187,8 @@ def patients_main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     m = sub.add_parser("measure", help="measure every patient's cut airway")
     s = sub.add_parser("simulate", help="run OpenFOAM on patient airways")
-    for p in (m, s):
+    g = sub.add_parser("surgery", help="virtual surgery: OpenFOAM on every procedure plan, rules chosen by the surrogate")
+    for p in (m, s, g):
         p.add_argument("--labels", type=Path, required=True, help="NasalSeg labels folder (*_seg.nrrd)")
         p.add_argument("--ids", nargs="*", help="patient ids such as P001 (default: all)")
     m.add_argument("--out", type=Path, default=Path("data/patients.csv"))
@@ -152,12 +196,19 @@ def patients_main(argv: list[str] | None = None) -> None:
     s.add_argument("--work", type=Path, default=Path("data/patient_sim"))
     s.add_argument("--procs", type=int, default=4)
     s.add_argument("--image", default=None)
+    g.add_argument("--out", type=Path, default=Path("data/patient_surgery.csv"))
+    g.add_argument("--work", type=Path, default=Path("data/patient_surgery"))
+    g.add_argument("--model", type=Path, default=Path("data/patient_surrogate.json"))
+    g.add_argument("--procs", type=int, default=4)
     args = parser.parse_args(argv)
 
     files = sorted(args.labels.glob("*_seg.nrrd"))
     if args.ids:
         files = [f for f in files if f.name.split("_")[0] in set(args.ids)]
     args.out.parent.mkdir(parents=True, exist_ok=True)
+    if args.command == "surgery":
+        _patient_surgery(args, files)
+        return
     done = pd.read_csv(args.out).to_dict("records") if args.command == "simulate" and args.out.exists() else []
     seen = {r["patient"] for r in done}
     rows, failed = list(done), []
