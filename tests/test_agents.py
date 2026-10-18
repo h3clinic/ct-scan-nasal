@@ -172,10 +172,12 @@ def test_surgery_tool_needs_labels_and_template_names_the_plan():
         tools.patient_surgery_options({"patient_id": "P001"})
     facts = {"prediction": {"total_resistance": 0.2, "left_resistance": 0.4, "right_resistance": 0.4, "source": "s"},
              "surgery": {"recommended_plan": "turbinate reduction + valve repair", "recommended_drop_pct": 6.0,
-                         "look_at_scan_plan": "turbinate reduction", "look_at_scan_drop_pct": 3.8,
-                         "openfoam_check": {"recommended_plan_drop_pct": 14.1, "best_plan": "valve repair",
-                                            "best_drop_pct": 15.0}}}
+                         "recommended_result": agents._drop_text("turbinate reduction + valve repair", 6.0, "predicted"),
+                         "look_at_scan_result": agents._drop_text("septoplasty", -2.0, "predicted"),
+                         "openfoam_check": {"recommended_plan_result": agents._drop_text("x", 14.1, "in OpenFOAM"),
+                                            "best_plan": "valve repair"}}}
     text = agents.template_summary(facts)
-    assert "turbinate reduction + valve repair" in text and "14.1%" in text
+    assert "turbinate reduction + valve repair: 6.0% lower" in text and "14.1% lower" in text
+    assert "septoplasty: 2.0% higher" in text
     assert agents.missing_numbers(text, facts) == []
     assert agents.plan_name("turbinate_reduction+valve_repair") == "turbinate reduction + valve repair"

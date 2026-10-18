@@ -173,10 +173,13 @@ class Tools:
             if "none" in cfd and len(cfd) > 1:
                 drops = {plan_name(p): round(100 * (1 - r / cfd["none"]), 1) for p, r in cfd.items() if p != "none"}
                 best = max(drops, key=drops.get)
-                out["openfoam_check"] = {
-                    "source": "OpenFOAM on each operated airway", "drop_pct_by_plan": drops,
-                    "best_plan": best, "best_drop_pct": drops[best],
-                    "recommended_plan_drop_pct": drops.get(out["recommended_plan"])}
+                check = {"source": "OpenFOAM on each operated airway", "best_plan": best, "best_drop_pct": drops[best]}
+                for key in ("recommended", "look_at_scan"):
+                    plan = out[f"{key}_plan"]
+                    if plan in drops:
+                        check[f"{key}_plan_drop_pct"] = drops[plan]
+                        check[f"{key}_plan_result"] = _drop_text(plan, drops[plan], "in OpenFOAM")
+                out["openfoam_check"] = check
         self.results["surgery"] = out
         return out
 
@@ -365,9 +368,10 @@ PROMPTS = {
         "changed and give total_resistance_before, total_resistance_after and total_change_pct. "
         "If the JSON has an openfoam entry, give its total_resistance as this patient's simulation result and "
         "say the other numbers are fast surrogate predictions. Mention every flag listed. "
-        "If the JSON has a surgery entry, name its recommended_plan with recommended_drop_pct, compare it with "
-        "look_at_scan_plan and look_at_scan_drop_pct, and if there is an openfoam_check give its "
-        "recommended_plan_drop_pct and best_plan. Say a surgeon makes the final decision."
+        "The prediction entry is the patient's current resistance, before any surgery. If the JSON has a surgery "
+        "entry, copy its recommended_result and look_at_scan_result sentences, and if there is an openfoam_check, "
+        "its recommended_plan_result and look_at_scan_plan_result sentences and its best_plan; keep the words "
+        "lower and higher exactly as written. Say a surgeon makes the final decision."
     ),
 }
 
@@ -502,13 +506,10 @@ def template_summary(facts: dict) -> str:
                      f"to {w['total_resistance_after']} ({w['total_change_pct']}%).")
     s = facts.get("surgery")
     if s:
-        lines.append(f"Recommended surgery: {s['recommended_plan']}, predicted to lower resistance by "
-                     f"{s['recommended_drop_pct']}% (look-at-the-scan plan: {s['look_at_scan_plan']}, "
-                     f"{s['look_at_scan_drop_pct']}%).")
+        lines.append(f"Recommended surgery: {s['recommended_result']}. Look-at-the-scan plan: {s['look_at_scan_result']}.")
         check = s.get("openfoam_check")
-        if check and check.get("recommended_plan_drop_pct") is not None:
-            lines.append(f"In OpenFOAM it lowered resistance by {check['recommended_plan_drop_pct']}%; "
-                         f"the best plan, {check['best_plan']}, by {check['best_drop_pct']}%.")
+        if check and check.get("recommended_plan_result"):
+            lines.append(f"OpenFOAM check: {check['recommended_plan_result']}; best plan: {check['best_plan']}.")
     for f in facts.get("flags", []):
         lines.append(f["text"])
     return " ".join(lines)
@@ -544,12 +545,19 @@ def _surgery_options(pid: str, label_path: str, surrogate) -> dict:
     drop = {plan: round(100 * (1 - r / before), 1) for plan, r in predicted.items()}
     return {
         "source": "patient surrogate on the virtually operated CT airway", "patient_id": pid,
-        "total_resistance_before": round(before, 4),
-        "drop_pct_by_plan": {plan_name(p): d for p, d in drop.items() if p},
+        "plans_compared": len(predicted) - 1,
         "recommended_plan": plan_name(recommended), "recommended_drop_pct": drop[recommended],
+        "recommended_result": _drop_text(plan_name(recommended), drop[recommended], "predicted"),
         "look_at_scan_plan": plan_name(standard), "look_at_scan_drop_pct": drop[standard],
+        "look_at_scan_result": _drop_text(plan_name(standard), drop[standard], "predicted"),
         "method": "smallest plan within 90% of the best predicted drop",
     }
+
+
+def _drop_text(plan: str, drop_pct: float, where: str) -> str:
+    """A drop stated in words, so its direction can't be misread."""
+    word = "lower" if drop_pct >= 0 else "higher"
+    return f"{plan}: {abs(drop_pct)}% {word} resistance ({where})"
 
 
 # ---------------------------------------------------------------- pipeline
