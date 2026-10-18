@@ -1,6 +1,6 @@
 # Nasal0: NVIDIA x Red Hat Small Models Hack submission
 
-**Live demo:** https://93650f646ef178da34.gradio.live (runs on the Brev H100 next to the model)
+**Live demo:** https://7a5747cfe97ac7e65b.gradio.live (runs on the Brev H100 next to the model)
 
 
 

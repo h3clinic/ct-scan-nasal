@@ -10,7 +10,7 @@ Built for the NVIDIA x Red Hat Small Models Hack; see [SUBMISSION.md](SUBMISSION
 - **Fast surrogate:** under 0.2 ms per prediction, 16.3% mean side error (cross-validated) against 29.9% for "average patient".
 - **Four agents** on NVIDIA Nemotron 3.5 Lightning 30B-A3B (3B active), served with vLLM. On 16 fixed probes (`nasal-agents --eval`), all 16 runs completed and 15 set the right case. 3 invalid tool calls out of 98 were caught by code and recovered, and every number the Explainer wrote either passed the code check or was replaced by the code template.
 - **Virtual surgery, verified in OpenFOAM:** on 10 obstructed real airways, Workflow++ reached the best plan's drop for 10 of 10, the standard rule for 1 of 10.
-- **Demo:** live at https://93650f646ef178da34.gradio.live; `nasal-demo`, a 3D resistance map of a real patient with what-if sliders and live agent steps.
+- **Demo:** live at https://7a5747cfe97ac7e65b.gradio.live; `nasal-demo`, a 3D resistance map of a real patient with what-if sliders and live agent steps.
 
 ```bash
 pip install -e ".[dev,sim,surrogate,agents,patients,demo]"
