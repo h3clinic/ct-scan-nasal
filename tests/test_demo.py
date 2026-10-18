@@ -52,3 +52,8 @@ def test_resistance_figure_colors_vertices_by_region():
                "region": np.array(["left_valve", "left_valve", "right_choana"], dtype=object)}
     fig = demo.resistance_figure(surface, {"left_valve": 0.2, "right_choana": 0.05}, "test")
     assert list(fig.data[0].intensity) == [0.2, 0.2, 0.05]
+
+
+def test_as_markdown_fixes_units_and_asterisks():
+    assert demo.as_markdown("drops from 0.144 Pa*s/cm^3 to 0.13 Pa*s/cm^3") == "drops from 0.144 Pa·s/cm³ to 0.13 Pa·s/cm³"
+    assert demo.as_markdown("a*b model_scope") == "a\*b model\_scope"

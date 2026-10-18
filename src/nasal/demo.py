@@ -96,6 +96,14 @@ def comparison_table(row: dict, predicted: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def as_markdown(text: str) -> str:
+    """Model text shown as Markdown: write units properly and escape stray asterisks
+    and underscores, which would otherwise turn "Pa*s/cm^3" into italics."""
+    for raw, nice in (("Pa*s/cm^3", "Pa·s/cm³"), ("Pa·s/cm^3", "Pa·s/cm³"), ("cm^3", "cm³")):
+        text = text.replace(raw, nice)
+    return text.replace("*", "\\*").replace("_", "\\_")
+
+
 def describe_step(step: dict) -> str | None:
     """One markdown line for an agent log step, or None to skip it."""
     who = step["agent"].capitalize()
@@ -172,7 +180,7 @@ def build_app(labels_dir: Path, sim_path: Path = agents.PATIENTS_PATH, model_pat
         out = result["out"]
         flags = "".join(f"\n- {f['text']}" for f in out["facts"]["flags"])
         yield ("\n".join(steps) + f"\n\n_Total {out['seconds']} s · summary from {out['summary_source']}_",
-               f"{out['summary']}\n\n**Flags**{flags}")
+               f"{as_markdown(out['summary'])}\n\n**Flags**{as_markdown(flags)}")
 
     with gr.Blocks(title="Nasal Airflow Demo") as app:
         gr.Markdown(f"## Nasal airflow: real patients, OpenFOAM, surrogate and Nemotron agents\n_{DISCLAIMER}_")
