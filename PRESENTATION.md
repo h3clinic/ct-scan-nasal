@@ -77,7 +77,7 @@ Yes, the airways come from NasalSeg, a public dataset of 130 CT scans. We simula
 It's a standard steady-state OpenFOAM setup (k-omega SST turbulence model). The median resistance, 0.146 Pa·s/cm³, is in the range measured on real adult noses. The walls are rigid and at voxel resolution, so the absolute numbers are approximate; comparing plans is the strong use.
 
 **Why a surrogate instead of always simulating?**
-A simulation takes minutes on many cores. The surrogate takes 0.2 ms, which is what makes sliders and agent answers instant. When it disagrees with a simulation by more than 25%, the Critic says so.
+A simulation takes minutes on many cores. The surrogate takes well under a millisecond, which is what makes sliders and agent answers instant. When it disagrees with a simulation by more than 25%, the Critic says so.
 
 **How good is the surrogate?**
 On real airways it averages a 16% error per side, against 30% for simply guessing the average patient. Its estimates of how much a surgery plan helps are rough (correlation 0.47 with OpenFOAM), which is why plans were scored in OpenFOAM.
@@ -106,7 +106,7 @@ A surgeon reviewing the decision rules, smoother airway walls, and more patients
 | --- | --- |
 | CT airways | 130 (126 simulated) |
 | Median nasal resistance | 0.146 Pa·s/cm³ at 150 Pa |
-| Surrogate | 16% side error vs 30% baseline; under 0.2 ms |
+| Surrogate | 16% side error vs 30% baseline; under 1 ms |
 | Virtual surgery | map-driven plan matched best 10/10; look-at-the-scan rule 1/10; 80 simulations |
 | Agents | 16/16 runs, 15/16 correct case, 3/98 bad calls caught; ~6 s per run |
 | Model | Nemotron 3.5 Lightning, 30B total / 3B active, vLLM on a Brev H100 |
