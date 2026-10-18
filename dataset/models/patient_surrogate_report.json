@@ -1,0 +1,30 @@
+{
+  "patients": 125,
+  "folds": 5,
+  "features": [
+    "volume_cm3",
+    "length_mm",
+    "inlet_area_mm2",
+    "min_area_mm2",
+    "mean_area_mm2",
+    "min_area_pos"
+  ],
+  "model": "power law per region (ridge on log geometry)",
+  "surrogate": {
+    "total_mean_pct": 14.412469560159751,
+    "total_max_pct": 86.54751652237675,
+    "side_mean_pct": 16.326357545047284,
+    "side_max_pct": 87.17945706903642,
+    "region_mean_pct": 35.04705271330293,
+    "region_max_pct": 843.92040583732
+  },
+  "average_patient": {
+    "total_mean_pct": 24.52831281527724,
+    "total_max_pct": 99.45019576514733,
+    "side_mean_pct": 29.89316093912204,
+    "side_max_pct": 152.04182166026348,
+    "region_mean_pct": 41.32838858611337,
+    "region_max_pct": 803.8132039237644
+  },
+  "predict_seconds_per_case": 0.00010393400000111796
+}

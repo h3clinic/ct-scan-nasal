@@ -1,0 +1,247 @@
+{
+  "model": {
+    "name": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+    "total_params": "30B",
+    "active_params": "3B"
+  },
+  "summary": {
+    "requests": 16,
+    "completed": 16,
+    "case_correct": 15,
+    "what_if_when_asked": "6/6",
+    "tool_calls": 98,
+    "tool_errors_sent_back": 3,
+    "explainer_first_try": 14,
+    "explainer_after_retry": 0,
+    "explainer_template_fallback": 2,
+    "median_seconds": 5.89
+  },
+  "runs": [
+    {
+      "completed": true,
+      "request": "Patient P022: which side is harder to breathe through?",
+      "case": {
+        "patient_id": "P022"
+      },
+      "case_ok": true,
+      "tool_calls": 5,
+      "tool_errors": 0,
+      "what_if_ok": true,
+      "explainer": "first try",
+      "seconds": 5.18
+    },
+    {
+      "completed": true,
+      "request": "Look at patient p039. What if the left side's narrowest section were 30% wider?",
+      "case": {
+        "patient_id": "P039"
+      },
+      "case_ok": true,
+      "tool_calls": 6,
+      "tool_errors": 0,
+      "what_if_ok": true,
+      "explainer": "first try",
+      "seconds": 5.97
+    },
+    {
+      "completed": true,
+      "request": "Show me NasalSeg patient 96 and widen the right narrowest section by 20%.",
+      "case": {
+        "patient_id": "P096"
+      },
+      "case_ok": true,
+      "tool_calls": 6,
+      "tool_errors": 0,
+      "what_if_ok": true,
+      "explainer": "first try",
+      "seconds": 6.22
+    },
+    {
+      "completed": true,
+      "request": "How obstructed is patient P064?",
+      "case": {
+        "patient_id": "P064"
+      },
+      "case_ok": true,
+      "tool_calls": 5,
+      "tool_errors": 0,
+      "what_if_ok": true,
+      "explainer": "first try",
+      "seconds": 5.14
+    },
+    {
+      "completed": true,
+      "request": "Patient P123, and what if its narrower side were widened by 40%?",
+      "case": {
+        "patient_id": "P123"
+      },
+      "case_ok": true,
+      "tool_calls": 6,
+      "tool_errors": 0,
+      "what_if_ok": true,
+      "explainer": "first try",
+      "seconds": 5.35
+    },
+    {
+      "completed": true,
+      "request": "Explain the airflow of patient P001.",
+      "case": {
+        "patient_id": "P001"
+      },
+      "case_ok": true,
+      "tool_calls": 5,
+      "tool_errors": 0,
+      "what_if_ok": true,
+      "explainer": "template fallback",
+      "seconds": 6.96
+    },
+    {
+      "completed": true,
+      "request": "Patient P999: how does it look?",
+      "case": {
+        "valve_angle_deg": 15.0,
+        "turbinate_scale": 1.0,
+        "septum_deviation": 0.0
+      },
+      "case_ok": true,
+      "tool_calls": 7,
+      "tool_errors": 1,
+      "what_if_ok": true,
+      "explainer": "first try",
+      "seconds": 5.89
+    },
+    {
+      "completed": true,
+      "request": "Patient P022 but make the valve narrower by 20% on the left.",
+      "case": {
+        "patient_id": "P022"
+      },
+      "case_ok": true,
+      "tool_calls": 5,
+      "tool_errors": 0,
+      "what_if_ok": true,
+      "explainer": "first try",
+      "seconds": 4.95
+    },
+    {
+      "completed": true,
+      "request": "A normal, healthy nose.",
+      "case": {
+        "valve_angle_deg": 15.0,
+        "turbinate_scale": 1.0,
+        "septum_deviation": 0.0
+      },
+      "case_ok": true,
+      "tool_calls": 6,
+      "tool_errors": 0,
+      "what_if_ok": true,
+      "explainer": "first try",
+      "seconds": 5.08
+    },
+    {
+      "completed": true,
+      "request": "Narrow nasal valve, about 9 degrees, everything else normal.",
+      "case": {
+        "valve_angle_deg": 9.0,
+        "turbinate_scale": 1.0,
+        "septum_deviation": 0.0
+      },
+      "case_ok": true,
+      "tool_calls": 6,
+      "tool_errors": 0,
+      "what_if_ok": true,
+      "explainer": "template fallback",
+      "seconds": 7.07
+    },
+    {
+      "completed": true,
+      "request": "Septum strongly deviated to the right.",
+      "case": {
+        "valve_angle_deg": 15.0,
+        "turbinate_scale": 1.0,
+        "septum_deviation": -1.0
+      },
+      "case_ok": true,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "what_if_ok": true,
+      "explainer": "first try",
+      "seconds": 6.11
+    },
+    {
+      "completed": true,
+      "request": "Septum bends to the left a little and the turbinates are enlarged.",
+      "case": {
+        "valve_angle_deg": 15.0,
+        "turbinate_scale": 1.2,
+        "septum_deviation": 0.3
+      },
+      "case_ok": true,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "what_if_ok": true,
+      "explainer": "first try",
+      "seconds": 6.36
+    },
+    {
+      "completed": true,
+      "request": "Valve angle of 40 degrees.",
+      "case": {
+        "valve_angle_deg": 15.0,
+        "turbinate_scale": 1.0,
+        "septum_deviation": 0.0
+      },
+      "case_ok": true,
+      "tool_calls": 8,
+      "tool_errors": 2,
+      "what_if_ok": true,
+      "explainer": "first try",
+      "seconds": 6.61
+    },
+    {
+      "completed": true,
+      "request": "Big turbinates, 1.5 times normal. What if they were reduced to 0.9?",
+      "case": {
+        "valve_angle_deg": 15.0,
+        "turbinate_scale": 1.5,
+        "septum_deviation": 0.0
+      },
+      "case_ok": true,
+      "tool_calls": 7,
+      "tool_errors": 0,
+      "what_if_ok": true,
+      "explainer": "first try",
+      "seconds": 5.81
+    },
+    {
+      "completed": true,
+      "request": "Valve 10 degrees, septum to the right 0.5. What if the valve were widened to 15 degrees?",
+      "case": {
+        "valve_angle_deg": 10.0,
+        "turbinate_scale": 1.0,
+        "septum_deviation": 0.5
+      },
+      "case_ok": false,
+      "tool_calls": 6,
+      "tool_errors": 0,
+      "what_if_ok": true,
+      "explainer": "first try",
+      "seconds": 5.55
+    },
+    {
+      "completed": true,
+      "request": "turbinate scale 0.7, valve 18, septum 0",
+      "case": {
+        "valve_angle_deg": 18.0,
+        "turbinate_scale": 0.7,
+        "septum_deviation": 0.0
+      },
+      "case_ok": true,
+      "tool_calls": 6,
+      "tool_errors": 0,
+      "what_if_ok": true,
+      "explainer": "first try",
+      "seconds": 5.73
+    }
+  ]
+}

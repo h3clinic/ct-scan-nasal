@@ -1,0 +1,23 @@
+{
+  "cases": 90,
+  "folds": 5,
+  "surrogate": {
+    "total_mean_pct": 7.787041655302767,
+    "total_max_pct": 48.836904188734295,
+    "side_mean_pct": 9.208886482441644,
+    "side_max_pct": 73.53518493449833,
+    "region_mean_pct": 27.17269987115074,
+    "region_max_pct": 398.0503791649391
+  },
+  "formula_baseline": {
+    "total_mean_pct": 23.07777627794145,
+    "total_max_pct": 49.747935005413765,
+    "side_mean_pct": 23.383710993092237,
+    "side_max_pct": 58.02703865034209,
+    "region_mean_pct": 209.29556239096257,
+    "region_max_pct": 1713.6726185152188
+  },
+  "predict_seconds_per_case": 0.00014934100006939844,
+  "simulation_seconds_per_case_median": 890.3223272309999,
+  "speedup": 5961673.799005424
+}
