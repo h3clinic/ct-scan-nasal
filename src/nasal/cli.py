@@ -106,7 +106,28 @@ def surrogate_main(argv: list[str] | None = None) -> None:
     parser.add_argument("--report", type=Path, default=Path("data/surrogate_report.json"))
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--epochs", type=int, default=sg.EPOCHS)
+    parser.add_argument("--patients", action="store_true",
+                        help="train the real-anatomy surrogate on patient_sim CSVs from nasal-patients")
     args = parser.parse_args(argv)
+
+    if args.patients:
+        table = pd.concat([pd.read_csv(p) for p in args.sim if Path(p).exists()],
+                          ignore_index=True).drop_duplicates("patient", keep="last")
+        targets = [c for c in table.columns if c.endswith("_resistance")]
+        usable = table[targets].notna().all(axis=1) & (table[targets] > 0).all(axis=1)
+        if (~usable).any():
+            print(f"skipping {int((~usable).sum())} patients with a missing or non-positive region value: "
+                  f"{', '.join(table.patient[~usable])}")
+        table = table[usable].reset_index(drop=True)
+        model_path = args.model if args.model != Path("data/surrogate.pt") else Path("data/patient_surrogate.json")
+        report_path = args.report if args.report != Path("data/surrogate_report.json") else Path("data/patient_surrogate_report.json")
+        result = sg.patient_report(table, args.folds)
+        sg.PatientSurrogate.fit(table).save(model_path)
+        table.to_csv(model_path.with_name("patient_sim.csv"), index=False)
+        sg.write_report(result, report_path)
+        print(json.dumps(result, indent=2))
+        print(f"model: {model_path}, report: {report_path}, patients: {model_path.with_name('patient_sim.csv')}")
+        return
 
     table = sg.load_simulated(args.sim)
     result = sg.report(table, args.folds, args.epochs)
@@ -114,6 +135,56 @@ def surrogate_main(argv: list[str] | None = None) -> None:
     sg.write_report(result, args.report)
     print(json.dumps(result, indent=2))
     print(f"model: {args.model}, report: {args.report}")
+
+
+def patients_main(argv: list[str] | None = None) -> None:
+    from . import anatomy
+
+    parser = argparse.ArgumentParser(description="Real patient airways from NasalSeg label volumes. Research only.")
+    sub = parser.add_subparsers(dest="command", required=True)
+    m = sub.add_parser("measure", help="measure every patient's cut airway")
+    s = sub.add_parser("simulate", help="run OpenFOAM on patient airways")
+    for p in (m, s):
+        p.add_argument("--labels", type=Path, required=True, help="NasalSeg labels folder (*_seg.nrrd)")
+        p.add_argument("--ids", nargs="*", help="patient ids such as P001 (default: all)")
+    m.add_argument("--out", type=Path, default=Path("data/patients.csv"))
+    s.add_argument("--out", type=Path, default=Path("data/patient_sim.csv"))
+    s.add_argument("--work", type=Path, default=Path("data/patient_sim"))
+    s.add_argument("--procs", type=int, default=4)
+    s.add_argument("--image", default=None)
+    args = parser.parse_args(argv)
+
+    files = sorted(args.labels.glob("*_seg.nrrd"))
+    if args.ids:
+        files = [f for f in files if f.name.split("_")[0] in set(args.ids)]
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    done = pd.read_csv(args.out).to_dict("records") if args.command == "simulate" and args.out.exists() else []
+    seen = {r["patient"] for r in done}
+    rows, failed = list(done), []
+    for f in files:
+        pid = f.name.split("_")[0]
+        if pid in seen:
+            continue
+        try:
+            if args.command == "measure":
+                labels, spacing, _ = anatomy.load_labels(f)
+                tags, _ = anatomy.airway(labels)
+                row = {"patient": pid, "labels_ok": anatomy.check_labels(labels), **anatomy.measure(tags, spacing)}
+            else:
+                kwargs = {"image": args.image} if args.image else {}
+                row = {"patient": pid, **anatomy.simulate_patient(f, args.work / pid, args.procs, **kwargs)}
+        except Exception as err:  # one bad scan or diverged run must not stop the batch
+            failed.append(pid)
+            print(f"{pid}: FAILED {type(err).__name__}: {str(err).splitlines()[0] if str(err) else ''}", flush=True)
+            continue
+        rows.append(row)
+        pd.DataFrame(rows).to_csv(args.out, index=False)
+        summary = (f"total resistance {row['total_resistance']:.4f} Pa*s/cm^3" if "total_resistance" in row
+                   else f"min area L {row['left_min_area_mm2']:.0f} / R {row['right_min_area_mm2']:.0f} mm^2")
+        print(f"{pid}: {summary}", flush=True)
+    print(f"wrote {len(rows)} patients to {args.out}")
+    if failed:
+        raise SystemExit(f"failed: {', '.join(failed)}")
 
 
 def agents_main(argv: list[str] | None = None) -> None:
@@ -130,7 +201,9 @@ def agents_main(argv: list[str] | None = None) -> None:
     parser.add_argument("--thinking", action="store_true", help="turn on the model's reasoning mode")
     args = parser.parse_args(argv)
 
-    out = agents.run_pipeline(args.request, surrogate=agents.load_surrogate(args.surrogate), thinking=args.thinking)
+    patients, patient_surrogate = agents.load_patients()
+    out = agents.run_pipeline(args.request, surrogate=agents.load_surrogate(args.surrogate), thinking=args.thinking,
+                              patients=patients, patient_surrogate=patient_surrogate)
     args.log.parent.mkdir(parents=True, exist_ok=True)
     args.log.write_text(json.dumps(out, indent=2), encoding="utf-8")
     print(out["summary"])

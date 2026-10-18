@@ -108,22 +108,30 @@ def _dict(cls: str, obj: str, body: str) -> str:
     return FOAM_HEADER.format(cls=cls, obj=obj) + body
 
 
-def _field(cls: str, name: str, dims: str, internal: str, inlet: str, outlet: str, wall: str) -> str:
+def _field(cls: str, name: str, dims: str, internal: str, inlet: str, outlet: str, wall: str,
+           inlet_key: str = "inlet") -> str:
     return _dict(cls, name, f"""
 dimensions {dims};
 internalField uniform {internal};
 boundaryField
 {{
-    inlet {{ {inlet} }}
+    {inlet_key} {{ {inlet} }}
     outlet {{ {outlet} }}
     wall {{ {wall} }}
 }}
 """)
 
 
-def case_files(processes: int = 8, turbulence: str = "kOmegaSST",
-               max_iterations: int = MAX_ITERATIONS) -> dict[str, str]:
-    """OpenFOAM case dictionaries and run script, keyed by relative path."""
+def case_files(processes: int = 8, turbulence: str = "kOmegaSST", max_iterations: int = MAX_ITERATIONS,
+               inlets: tuple[str, ...] = ("inlet",), sample_planes: bool = True,
+               mesh_commands: list[str] | None = None, write_format: str = "binary",
+               reconstruct: bool = False) -> dict[str, str]:
+    """OpenFOAM case dictionaries and run script, keyed by relative path.
+
+    The defaults build the idealized tube case from a gmsh mesh. Patient
+    airways (`nasal.anatomy`) pass their own inlet patches and mesh commands,
+    skip the plane sampling, and keep the full fields in ASCII.
+    """
     if turbulence not in TURBULENCE:
         raise ValueError(f"turbulence must be one of {TURBULENCE}")
     rans = turbulence != "laminar"
@@ -133,6 +141,22 @@ def case_files(processes: int = 8, turbulence: str = "kOmegaSST",
         f"            x{i} {{ type cuttingPlane; point ({xb:.6g} 0 0); normal (1 0 0); interpolate false; }}"
         for i, xb in enumerate(region_boundaries(), start=1)
     )
+    inlet_key = inlets[0] if len(inlets) == 1 else '"(' + "|".join(inlets) + ')"'
+    field = lambda *args: _field(*args, inlet_key=inlet_key)  # noqa: E731
+    plane_function = f"""    planes
+    {{
+        type surfaces;
+        libs (sampling);
+        writeControl writeTime;
+        surfaceFormat raw;
+        formatOptions {{ raw {{ normal yes; }} }}
+        interpolationScheme cell;
+        fields (p U pMean UMean);
+        surfaces
+        {{
+{planes}
+        }}
+    }}""" if sample_planes else ""
     flow_objects = "\n".join(
         f"""    {patch}Flow
     {{
@@ -145,7 +169,7 @@ def case_files(processes: int = 8, turbulence: str = "kOmegaSST",
         writeFields false;
         log false;
     }}"""
-        for patch in ("inlet", "outlet")
+        for patch in (*inlets, "outlet")
     )
     files = {
         "system/controlDict": _dict("dictionary", "controlDict", f"""
@@ -158,7 +182,7 @@ deltaT 1;
 writeControl timeStep;
 writeInterval {max_iterations};
 purgeWrite 1;
-writeFormat binary;
+writeFormat {write_format};
 runTimeModifiable false;
 
 functions
@@ -172,20 +196,7 @@ functions
         writeControl writeTime;
         fields ( p {{ mean on; prime2Mean off; base time; }} U {{ mean on; prime2Mean off; base time; }} );
     }}
-    planes
-    {{
-        type surfaces;
-        libs (sampling);
-        writeControl writeTime;
-        surfaceFormat raw;
-        formatOptions {{ raw {{ normal yes; }} }}
-        interpolationScheme cell;
-        fields (p U pMean UMean);
-        surfaces
-        {{
-{planes}
-        }}
-    }}
+{plane_function}
 }}
 """),
         "system/fvSchemes": _dict("dictionary", "fvSchemes", """
@@ -228,10 +239,10 @@ nu {NU:.6g};
         "constant/turbulenceProperties": _dict("dictionary", "turbulenceProperties",
             f"\nsimulationType RAS;\nRAS {{ RASModel {turbulence}; turbulence on; printCoeffs off; }}\n"
             if rans else "\nsimulationType laminar;\n"),
-        "0/p": _field("volScalarField", "p", "[0 2 -2 0 0 0 0]", "0",
+        "0/p": field("volScalarField", "p", "[0 2 -2 0 0 0 0]", "0",
                       f"type uniformTotalPressure; p0 table ((0 0) ({ramp} {p0:.6g})); value uniform 0;",
                       "type fixedValue; value uniform 0;", "type zeroGradient;"),
-        "0/U": _field("volVectorField", "U", "[0 1 -1 0 0 0 0]", "(0 0 0)",
+        "0/U": field("volVectorField", "U", "[0 1 -1 0 0 0 0]", "(0 0 0)",
                       "type pressureInletOutletVelocity; value uniform (0 0 0);",
                       "type inletOutlet; inletValue uniform (0 0 0); value uniform (0 0 0);",
                       "type noSlip;"),
@@ -242,11 +253,11 @@ nu {NU:.6g};
         k = 1.5 * (INLET_INTENSITY * INLET_VELOCITY) ** 2
         omega = np.sqrt(k) / (0.09**0.25 * INLET_MIXING_LENGTH)
         free = lambda v: f"type inletOutlet; inletValue uniform {v:.6g}; value uniform {v:.6g};"
-        files["0/k"] = _field("volScalarField", "k", "[0 2 -2 0 0 0 0]", f"{k:.6g}",
+        files["0/k"] = field("volScalarField", "k", "[0 2 -2 0 0 0 0]", f"{k:.6g}",
                               free(k), free(k), f"type kqRWallFunction; value uniform {k:.6g};")
-        files["0/omega"] = _field("volScalarField", "omega", "[0 0 -1 0 0 0 0]", f"{omega:.6g}",
+        files["0/omega"] = field("volScalarField", "omega", "[0 0 -1 0 0 0 0]", f"{omega:.6g}",
                                   free(omega), free(omega), f"type omegaWallFunction; value uniform {omega:.6g};")
-        files["0/nut"] = _field("volScalarField", "nut", "[0 2 -1 0 0 0 0]", "0",
+        files["0/nut"] = field("volScalarField", "nut", "[0 2 -1 0 0 0 0]", "0",
                                 "type calculated; value uniform 0;", "type calculated; value uniform 0;",
                                 "type nutkWallFunction; value uniform 0;")
     run = [
@@ -254,8 +265,10 @@ nu {NU:.6g};
         # The container runs as root; give the files back to the case folder's
         # owner so the host user can delete or rerun the case on Linux.
         "trap 'chown -R --reference=. . 2>/dev/null || true' EXIT",
-        "gmshToFoam side.msh > log.gmshToFoam",
-        "foamDictionary constant/polyMesh/boundary -entry entry0/wall/type -set wall > /dev/null",
+        *(mesh_commands if mesh_commands is not None else [
+            "gmshToFoam side.msh > log.gmshToFoam",
+            "foamDictionary constant/polyMesh/boundary -entry entry0/wall/type -set wall > /dev/null",
+        ]),
         "checkMesh > log.checkMesh || true",
     ]
     if processes > 1:
@@ -264,6 +277,7 @@ nu {NU:.6g};
             # No core binding: by default every container pins its ranks to
             # cores 0..n-1, so parallel batches would all share the same cores.
             f"mpirun --allow-run-as-root --bind-to none -np {processes} simpleFoam -parallel > log.simpleFoam",
+            *(["reconstructPar -latestTime > log.reconstructPar"] if reconstruct else []),
             "rm -rf processor*",
         ]
     else:

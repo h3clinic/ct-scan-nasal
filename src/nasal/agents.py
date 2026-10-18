@@ -25,6 +25,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
+
 from .params import PARAM_SPECS, REGIONS, SIDES, CaseParams
 from .resistance import REFERENCE_PRESSURE, evaluate
 
@@ -34,6 +36,9 @@ MODEL_INFO = {"name": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", "total_para
 SURROGATE_PATH = Path("data/surrogate.pt")
 MAX_TURNS = 6
 DISAGREEMENT_FLAG_PCT = 25.0  # surrogate vs formula, a model-agreement check, not a clinical threshold
+EXTRAPOLATION_SD = 3.0  # patient geometry this many std devs from the training mean is flagged
+PATIENTS_PATH = Path("data/patient_sim.csv")
+PATIENT_SURROGATE_PATH = Path("data/patient_surrogate.json")
 
 # ---------------------------------------------------------------- tools (code)
 
@@ -86,6 +91,68 @@ class Tools:
     surrogate: object | None = None
     case: CaseParams | None = None
     results: dict = field(default_factory=dict)
+    patients: object | None = None  # DataFrame of NasalSeg patients (geometry, and OpenFOAM results if run)
+    patient_surrogate: object | None = None
+    patient: dict | None = None
+
+    # ---- real patients (NasalSeg) ----
+
+    def _patient_row(self, args: dict) -> dict:
+        if self.patients is None:
+            raise ToolError("no patient data loaded")
+        pid = str(args.get("patient_id", "")).strip().upper()
+        match = self.patients[self.patients.patient == pid]
+        if match.empty:
+            raise ToolError(f"unknown patient_id {pid!r}; ids look like P001 to P130")
+        return match.iloc[0].to_dict()
+
+    def set_patient(self, args: dict) -> dict:
+        self.patient = self._patient_row(args)
+        geometry = {k: round(float(v), 1) for k, v in self.patient.items()
+                    if any(k.startswith(f"{s}_") for s in SIDES) and k.endswith(("_mm2", "_mm", "_cm3"))}
+        return {"patient_id": self.patient["patient"], "geometry": geometry, "valid": True}
+
+    def _patient_predict(self, geometry: dict) -> tuple[str, dict]:
+        if self.patient_surrogate is None:
+            raise ToolError("no trained patient surrogate; run nasal-surrogate --patients first")
+        return "patient surrogate (power law fitted to OpenFOAM on real airways)", self.patient_surrogate.predict(geometry)
+
+    def patient_resistance(self, args: dict) -> dict:
+        row = self._patient_row(args)
+        source, record = self._patient_predict(row)
+        out = {"source": source, "patient_id": row["patient"], **_summary(record)}
+        self.results["prediction"] = out
+        if not np.isnan(row.get("total_resistance", np.nan)):
+            self.results["openfoam"] = {"source": "OpenFOAM on this patient's CT airway", **_summary(row)}
+            out["openfoam_total_resistance"] = self.results["openfoam"]["total_resistance"]
+        return out
+
+    def patient_what_if(self, args: dict) -> dict:
+        row = self._patient_row(args)
+        side = str(args.get("side", "")).lower()
+        if side not in SIDES:
+            raise ToolError("side must be 'left' or 'right'")
+        try:
+            pct = float(args.get("narrowest_area_change_pct"))
+        except (TypeError, ValueError) as err:
+            raise ToolError("narrowest_area_change_pct must be a number") from err
+        if not -50 <= pct <= 100:
+            raise ToolError("narrowest_area_change_pct must be between -50 and 100")
+        changed = dict(row)
+        changed[f"{side}_min_area_mm2"] = row[f"{side}_min_area_mm2"] * (1 + pct / 100)
+        changed[f"{side}_mean_area_mm2"] = max(row[f"{side}_mean_area_mm2"], changed[f"{side}_min_area_mm2"])
+        source, before = self._patient_predict(row)
+        _, after = self._patient_predict(changed)
+        out = {
+            "source": source, "patient_id": row["patient"],
+            "label": f"{side} narrowest cross-section {'widened' if pct >= 0 else 'narrowed'} by {abs(pct):g}%",
+            "total_resistance_before": round(before["total_resistance"], 4),
+            "total_resistance_after": round(after["total_resistance"], 4),
+            "total_change_pct": round(100 * (after["total_resistance"] / before["total_resistance"] - 1), 1),
+            **{f"{s}_resistance_after": round(after[f"{s}_resistance"], 4) for s in SIDES},
+        }
+        self.results.setdefault("what_if", []).append(out)
+        return out
 
     def predictor(self) -> tuple[str, Callable[[CaseParams], dict]]:
         if self.surrogate is not None:
@@ -144,8 +211,19 @@ class Tools:
         """Deterministic checks. Each flag has an id the Critic must cite."""
         flags = []
         pred, form = self.results.get("prediction"), self.results.get("formula")
-        if self.case is None:
-            flags.append({"id": "no_case", "severity": "error", "text": "No valid case was set."})
+        if self.case is None and self.patient is None:
+            flags.append({"id": "no_case", "severity": "error", "text": "No valid case or patient was set."})
+        cfd = self.results.get("openfoam")
+        if pred and cfd:
+            diff = 100 * abs(pred["total_resistance"] / cfd["total_resistance"] - 1)
+            if diff > DISAGREEMENT_FLAG_PCT:
+                flags.append({"id": "surrogate_vs_openfoam", "severity": "warning",
+                              "text": f"Surrogate and this patient's OpenFOAM run differ by {diff:.0f}%."})
+        if self.patient is not None and self.patient_surrogate is not None:
+            z = self.patient_surrogate.zscores(self.patient_surrogate.side_features(self.patient))
+            if np.abs(z).max() > EXTRAPOLATION_SD:
+                flags.append({"id": "unusual_anatomy", "severity": "warning",
+                              "text": "This airway is far outside the training patients, so the surrogate is extrapolating."})
         if pred is None:
             flags.append({"id": "no_prediction", "severity": "error", "text": "No resistance prediction was run."})
         if pred and form:
@@ -166,8 +244,10 @@ class Tools:
             if pred[f"{hi}_resistance"] > 1.5 * pred[f"{lo}_resistance"]:
                 flags.append({"id": "asymmetric", "severity": "info",
                               "text": f"The {hi} side has over 1.5 times the resistance of the {lo} side."})
+        geometry = ("Real CT airway (NasalSeg), voxel-resolution model." if self.patient is not None
+                    else "Synthetic, idealized geometry.")
         flags.append({"id": "research_only", "severity": "info",
-                      "text": "Synthetic, idealized geometry. Research only, not medical advice."})
+                      "text": f"{geometry} Research only, not medical advice."})
         self.results["flags"] = flags
         return {"flags": flags}
 
@@ -191,6 +271,21 @@ SCHEMAS = {
                             {"type": "object", "properties": {}}),
     "finish": _tool("finish", "Call when you have run every tool the request needs.",
                     {"type": "object", "properties": {"reason": {"type": "string"}}}),
+    "set_patient": _tool("set_patient", "Select a real NasalSeg patient by id (P001 to P130).", {
+        "type": "object", "properties": {"patient_id": {"type": "string", "pattern": "^P[0-9]{3}$"}},
+        "required": ["patient_id"]}),
+    "patient_resistance": _tool(
+        "patient_resistance",
+        "Predicted nasal resistance per side and region for a real patient, plus their OpenFOAM result if available.",
+        {"type": "object", "properties": {"patient_id": {"type": "string"}}, "required": ["patient_id"]}),
+    "patient_what_if": _tool(
+        "patient_what_if",
+        "Predicted resistance if one side's narrowest cross-section were widened or narrowed by a percentage.",
+        {"type": "object", "properties": {
+            "patient_id": {"type": "string"},
+            "side": {"type": "string", "enum": ["left", "right"]},
+            "narrowest_area_change_pct": {"type": "number", "minimum": -50, "maximum": 100}},
+         "required": ["patient_id", "side", "narrowest_area_change_pct"]}),
     "report_flags": _tool("report_flags", "Report which flags from review_results matter for the reader.", {
         "type": "object",
         "properties": {"flag_ids": {"type": "array", "items": {"type": "string"}},
@@ -209,6 +304,18 @@ PROMPTS = {
         "Septum deviation is -1 to 1: positive bends toward and narrows the LEFT side, negative the RIGHT. "
         "If the description does not mention a parameter, use the nominal value (15, 1.0, 0.0). "
         "If set_case returns an error, fix the arguments and call it again."
+    ),
+    "case_patient": (
+        "You are the Case agent in a research prototype about nasal airflow. If the request names a real "
+        "NasalSeg patient (an id like P017), call set_patient with that id. Otherwise turn the description into "
+        "case parameters and call set_case: valve angle in degrees (normal about 15, narrow 8 to 10), turbinate "
+        "scale (1.0 nominal, larger means less airway), septum deviation -1 to 1 (positive narrows the LEFT side). "
+        "Use nominal values (15, 1.0, 0.0) for anything not mentioned. If a tool returns an error, fix it and retry."
+    ),
+    "planner_patient": (
+        "You are the Planner. A real patient has been selected. Always call patient_resistance for that patient. "
+        "If the user asks about widening or narrowing one side, call patient_what_if with the side and the "
+        "percentage change of its narrowest cross-section. Never state numbers yourself. When done, call finish."
     ),
     "planner": (
         "You are the Planner. A case has been set. Decide which tools answer the user's request. Always call "
@@ -240,10 +347,11 @@ class AgentLog:
 
 
 def run_agent(client, model: str, agent: str, system: str, user: str, tools: Tools, tool_names: list[str],
-              log: AgentLog, final_tool: str | None = None, max_turns: int = MAX_TURNS,
+              log: AgentLog, final_tool: str | tuple[str, ...] | None = None, max_turns: int = MAX_TURNS,
               extra_body: dict | None = None):
     """Chat loop: execute tool calls in code, send errors back, stop at final_tool.
     Returns the final tool's arguments, or the model's text if no final tool."""
+    finals = (final_tool,) if isinstance(final_tool, str) else tuple(final_tool or ())
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     schemas = [SCHEMAS[n] for n in tool_names]
     for turn in range(max_turns):
@@ -259,10 +367,10 @@ def run_agent(client, model: str, agent: str, system: str, user: str, tools: Too
                 content=reply.content, tool_calls=[{"name": c.function.name, "arguments": c.function.arguments}
                                                    for c in calls])
         if not calls:
-            if final_tool is None:
+            if not finals:
                 return reply.content or ""
             messages.append({"role": "assistant", "content": reply.content or ""})
-            messages.append({"role": "user", "content": f"Call {final_tool} to finish."})
+            messages.append({"role": "user", "content": f"Call {' or '.join(finals)} to finish."})
             continue
         messages.append({"role": "assistant", "content": reply.content or "", "tool_calls": [
             {"id": c.id, "type": "function", "function": {"name": c.function.name, "arguments": c.function.arguments}}
@@ -275,7 +383,7 @@ def run_agent(client, model: str, agent: str, system: str, user: str, tools: Too
                     raise ToolError("arguments must be a JSON object")
                 if name not in tool_names:
                     raise ToolError(f"unknown tool {name}; available: {', '.join(tool_names)}")
-                if name == final_tool:
+                if name in finals:
                     if name == "report_flags":
                         known = {f["id"] for f in tools.results.get("flags", [])}
                         unknown = set(args.get("flag_ids", [])) - known
@@ -364,33 +472,59 @@ def load_surrogate(path: Path = SURROGATE_PATH):
         return None
 
 
+def load_patients(sim_path: Path = PATIENTS_PATH, model_path: Path = PATIENT_SURROGATE_PATH):
+    """NasalSeg patient table and trained patient surrogate, or (None, None) when missing."""
+    if not Path(sim_path).exists() or not Path(model_path).exists():
+        return None, None
+    import pandas as pd
+
+    from .surrogate import PatientSurrogate
+    return pd.read_csv(sim_path), PatientSurrogate.load(model_path)
+
+
 def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogate=None,
-                 thinking: bool = False) -> dict:
-    """Case -> Planner -> Critic -> Explainer. Returns the facts, the summary and the full agent log."""
+                 thinking: bool = False, patients=None, patient_surrogate=None) -> dict:
+    """Case -> Planner -> Critic -> Explainer. Returns the facts, the summary and the full agent log.
+    With `patients` (and their surrogate) the Case agent may pick a real NasalSeg patient."""
     if client is None:
         from openai import OpenAI
         client = OpenAI(base_url=DEFAULT_URL, api_key=os.environ.get("NASAL_LLM_KEY", "none"))
     extra = {"chat_template_kwargs": {"enable_thinking": thinking}}
-    tools, log = Tools(surrogate=surrogate), AgentLog()
+    tools = Tools(surrogate=surrogate, patients=patients, patient_surrogate=patient_surrogate)
+    log = AgentLog()
     start = time.time()
 
-    run_agent(client, model, "case", PROMPTS["case"], request, tools, ["set_case"], log, final_tool="set_case",
-              extra_body=extra)
+    if patients is not None:
+        run_agent(client, model, "case", PROMPTS["case_patient"], request, tools, ["set_patient", "set_case"], log,
+                  final_tool=("set_patient", "set_case"), extra_body=extra)
+    else:
+        run_agent(client, model, "case", PROMPTS["case"], request, tools, ["set_case"], log, final_tool="set_case",
+                  extra_body=extra)
 
-    case_json = json.dumps(asdict(tools.case))
-    run_agent(client, model, "planner", PROMPTS["planner"], f"Request: {request}\nCase: {case_json}", tools,
-              ["predict_resistance", "formula_resistance", "what_if", "finish"], log, final_tool="finish",
-              extra_body=extra)
-    if "prediction" not in tools.results:  # the plan must include a prediction; code enforces it
-        log.add("planner", "fallback", reason="planner skipped predict_resistance")
-        tools.predict_resistance(asdict(tools.case))
+    if tools.patient is not None:
+        pid = tools.patient["patient"]
+        run_agent(client, model, "planner", PROMPTS["planner_patient"], f"Request: {request}\nPatient: {pid}", tools,
+                  ["patient_resistance", "patient_what_if", "finish"], log, final_tool="finish", extra_body=extra)
+        if "prediction" not in tools.results:
+            log.add("planner", "fallback", reason="planner skipped patient_resistance")
+            tools.patient_resistance({"patient_id": pid})
+        case_facts = {"patient_id": pid}
+    else:
+        case_json = json.dumps(asdict(tools.case))
+        run_agent(client, model, "planner", PROMPTS["planner"], f"Request: {request}\nCase: {case_json}", tools,
+                  ["predict_resistance", "formula_resistance", "what_if", "finish"], log, final_tool="finish",
+                  extra_body=extra)
+        if "prediction" not in tools.results:  # the plan must include a prediction; code enforces it
+            log.add("planner", "fallback", reason="planner skipped predict_resistance")
+            tools.predict_resistance(asdict(tools.case))
+        case_facts = asdict(tools.case)
 
     flags_chosen = run_agent(client, model, "critic", PROMPTS["critic"], "Review the results.", tools,
                              ["review_results", "check_parameters", "report_flags"], log, final_tool="report_flags",
                              extra_body=extra)
     chosen = set(flags_chosen.get("flag_ids", [])) | {"research_only"}
     chosen |= {f["id"] for f in tools.results["flags"] if f["severity"] == "error"}  # errors are never dropped
-    facts = {"case": asdict(tools.case), **{k: v for k, v in tools.results.items() if k != "flags"},
+    facts = {"case": case_facts, **{k: v for k, v in tools.results.items() if k != "flags"},
              "flags": [f for f in tools.results["flags"] if f["id"] in chosen]}
 
     summary, source = None, "explainer"

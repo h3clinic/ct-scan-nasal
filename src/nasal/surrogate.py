@@ -11,7 +11,7 @@ positive and the regions sum to the side resistance exactly as in
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
@@ -198,3 +198,108 @@ def load_simulated(paths: list[Path]) -> pd.DataFrame:
 
 def write_report(result: dict, path: Path) -> None:
     path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+
+# ---------------------------------------------------------------- real patients
+
+PATIENT_FEATURES = ("volume_cm3", "length_mm", "inlet_area_mm2", "min_area_mm2", "mean_area_mm2", "min_area_pos")
+PATIENT_RIDGE = 1.0
+
+
+def _patient_design(geometry_rows: np.ndarray) -> np.ndarray:
+    return np.log(np.clip(np.asarray(geometry_rows, dtype=float), 1e-3, None))
+
+
+def patient_side_rows(table: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """Measured geometry (n_sides, 6) and log region resistances (n_sides, 4) for every side."""
+    feats, targets = [], []
+    for _, row in table.iterrows():
+        for side in SIDES:
+            feats.append([row[f"{side}_{f}"] for f in PATIENT_FEATURES])
+            targets.append([np.log(row[f"{side}_{r}_resistance"]) for r in REGIONS])
+    return np.array(feats, dtype=float), np.array(targets, dtype=float)
+
+
+@dataclass
+class PatientSurrogate:
+    """Power law per region: log(region resistance) is linear in the log of one
+    side's measured geometry (PATIENT_FEATURES), fitted by ridge regression on
+    standardized inputs. With about two hundred sides this generalized better
+    than the MLP used for the idealized cases (README, Real patients)."""
+
+    weights: list  # (1 + n_features) x n_regions, on standardized log features
+    x_mean: list[float]  # mean of the log features
+    x_std: list[float]
+
+    @classmethod
+    def fit(cls, table: pd.DataFrame, ridge: float = PATIENT_RIDGE) -> "PatientSurrogate":
+        x, y = patient_side_rows(table)
+        z = _patient_design(x)
+        mean, std = z.mean(axis=0), z.std(axis=0) + 1e-9
+        a = np.hstack([np.ones((len(z), 1)), (z - mean) / std])
+        penalty = ridge * np.eye(a.shape[1])
+        penalty[0, 0] = 0.0  # the intercept is not shrunk
+        w = np.linalg.solve(a.T @ a + penalty, a.T @ y)
+        return cls(w.tolist(), mean.tolist(), std.tolist())
+
+    def zscores(self, geometry_rows: np.ndarray) -> np.ndarray:
+        """How far each side's log geometry is from the training mean, in std devs."""
+        return (_patient_design(np.atleast_2d(geometry_rows)) - np.array(self.x_mean)) / np.array(self.x_std)
+
+    def region_resistance(self, geometry_rows: np.ndarray) -> np.ndarray:
+        z = self.zscores(geometry_rows)
+        a = np.hstack([np.ones((len(z), 1)), z])
+        return np.exp(a @ np.array(self.weights))
+
+    def side_features(self, geometry: dict) -> np.ndarray:
+        return np.array([[geometry[f"{s}_{f}"] for f in PATIENT_FEATURES] for s in SIDES], dtype=float)
+
+    def predict(self, geometry: dict, pressure: float = REFERENCE_PRESSURE) -> dict:
+        """Record with `evaluate`'s columns from one patient's measured geometry
+        (keys like left_min_area_mm2, as written by `nasal.anatomy.measure`)."""
+        regions = self.region_resistance(self.side_features(geometry))
+        record, total_flow = {}, 0.0
+        for side, reg in zip(SIDES, regions):
+            r = float(reg.sum())
+            total_flow += pressure / r
+            record[f"{side}_flow_cm3_s"] = pressure / r
+            record[f"{side}_resistance"] = r
+            for name, value in zip(REGIONS, reg):
+                record[f"{side}_{name}_resistance"] = float(value)
+        return {"total_resistance": pressure / total_flow, "total_flow_cm3_s": total_flow, **record}
+
+    def save(self, path: Path) -> None:
+        Path(path).write_text(json.dumps({"features": list(PATIENT_FEATURES), **asdict(self)}, indent=1))
+
+    @classmethod
+    def load(cls, path: Path) -> "PatientSurrogate":
+        data = json.loads(Path(path).read_text())
+        if data.pop("features") != list(PATIENT_FEATURES):
+            raise ValueError(f"{path} was trained on different features")
+        return cls(**data)
+
+
+def patient_report(table: pd.DataFrame, folds: int = 5, seed: int = 0) -> dict:
+    """Cross-validated error of the patient surrogate, next to predicting the
+    training-fold average (geometric mean) for every patient."""
+    table = table.reset_index(drop=True)
+    order = np.random.default_rng(seed).permutation(len(table))
+    preds, means = {}, {}
+    for k in range(folds):
+        test = order[k::folds]
+        train = table.iloc[np.setdiff1d(order, test)]
+        model = PatientSurrogate.fit(train)
+        avg = {c: float(np.exp(np.log(train[c]).mean())) for c in train.columns if c.endswith("_resistance")}
+        for i in test:
+            preds[i] = model.predict(table.iloc[i].to_dict())
+            means[i] = avg
+    cv = pd.DataFrame([preds[i] for i in range(len(table))])
+    avg = pd.DataFrame([means[i] for i in range(len(table))])
+    model = PatientSurrogate.fit(table)
+    start = time.perf_counter()
+    for _ in range(200):
+        model.predict(table.iloc[0].to_dict())
+    return {"patients": len(table), "folds": folds, "features": list(PATIENT_FEATURES),
+            "model": "power law per region (ridge on log geometry)",
+            "surrogate": errors(table, cv), "average_patient": errors(table, avg),
+            "predict_seconds_per_case": (time.perf_counter() - start) / 200}

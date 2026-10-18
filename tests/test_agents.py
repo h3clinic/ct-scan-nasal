@@ -105,3 +105,36 @@ def test_unsupported_numbers():
 def test_tool_schemas_follow_param_specs():
     props = agents.SCHEMAS["set_case"]["function"]["parameters"]["properties"]
     assert props["valve_angle_deg"]["minimum"] == 8.0 and props["septum_deviation"]["maximum"] == 1.0
+
+
+def test_patient_mode_selects_patient_and_runs_patient_tools():
+    pytest.importorskip("torch")
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_surrogate import _fake_patients
+
+    from nasal.surrogate import PatientSurrogate
+
+    table = _fake_patients(30)
+    model = PatientSurrogate.fit(table)
+    before = round(model.predict(table.iloc[3].to_dict())["total_resistance"], 4)
+    client = ScriptedClient([
+        reply(calls=[call("set_patient", {"patient_id": "p999"})]),  # unknown: error goes back to the model
+        reply(calls=[call("set_patient", {"patient_id": "P003"}, 1)]),
+        reply(calls=[call("patient_resistance", {"patient_id": "P003"}, 2),
+                     call("patient_what_if", {"patient_id": "P003", "side": "left", "narrowest_area_change_pct": 30}, 3)]),
+        reply(calls=[call("finish", {}, 4)]),
+        reply(calls=[call("review_results", {}, 5)]),
+        reply(calls=[call("report_flags", {"flag_ids": ["research_only"]}, 6)]),
+        reply(content="placeholder"),  # no numbers: fails the check, retried
+        reply(content="placeholder"),  # fails again: code writes the template summary
+    ])
+    out = agents.run_pipeline("Patient P003: what if the left narrowest section were 30% wider?", client=client,
+                              patients=table, patient_surrogate=model)
+    assert out["facts"]["case"] == {"patient_id": "P003"}
+    assert out["facts"]["prediction"]["total_resistance"] == before
+    assert out["facts"]["what_if"][0]["total_resistance_after"] < before
+    assert "Real CT airway" in out["facts"]["flags"][-1]["text"]
+    assert out["summary_source"].startswith("template") and str(before) in out["summary"]

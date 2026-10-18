@@ -1,8 +1,8 @@
 # ct-scan-nasal
 
-> **Research only. Not medical advice.** Nothing here is validated for clinical use. The geometry is idealized and synthetic, not derived from patient scans.
+> **Research only. Not medical advice.** Nothing here is validated for clinical use. There are two geometry sources: idealized synthetic tubes, and real airways segmented from the public NasalSeg CT dataset (CC BY 4.0). Neither is a clinical model of a particular person.
 
-A prototype for evaluating nasal airway obstruction. It builds parametric airway geometries, estimates airflow resistance by region, and wraps the tools in a small-model agent loop that explains the results. Every language model stays at or under 33B parameters. Physics and decision rules are plain code, never a language model, so every number traces back to a formula or a simulation.
+A prototype for evaluating nasal airway obstruction. It builds airway geometries (parametric tubes, and real patient airways from CT), estimates airflow resistance by region, and wraps the tools in a small-model agent loop that explains the results. Every language model stays at or under 33B parameters. Physics and decision rules are plain code, never a language model, so every number traces back to a formula or a simulation.
 
 ## Design
 
@@ -12,8 +12,8 @@ All four agents run on one served model, [NVIDIA Nemotron 3.5 Lightning 30B-A3B]
 
 | Agent | Model | Tools it may call | Job |
 | --- | --- | --- | --- |
-| Case | Nemotron 3.5 Lightning 30B-A3B | `set_case` | Turns a description into the three case parameters; code validates them and returns errors for the model to fix |
-| Planner | Nemotron 3.5 Lightning 30B-A3B | `predict_resistance`, `formula_resistance`, `what_if`, `finish` | Decides which physics tools answer the request |
+| Case | Nemotron 3.5 Lightning 30B-A3B | `set_case`, `set_patient` | Picks a real NasalSeg patient by id, or turns a description into the three case parameters; code validates them and returns errors for the model to fix |
+| Planner | Nemotron 3.5 Lightning 30B-A3B | `predict_resistance`, `formula_resistance`, `what_if`, `patient_resistance`, `patient_what_if`, `finish` | Decides which physics tools answer the request |
 | Critic | Nemotron 3.5 Lightning 30B-A3B | `review_results`, `check_parameters`, `report_flags` | Runs the code checks and picks which flags to show; it can cite only flag ids the checks produced |
 | Explainer | Nemotron 3.5 Lightning 30B-A3B | none | Writes the plain-language summary; code rejects any number not in the tool results and retries once, then falls back to a template written by code |
 
@@ -28,7 +28,8 @@ The agent count stays at four: more agents mostly add latency and failure points
 | Case generation | Python + pandas | **Done**: `nasal.cases`, `nasal-generate` |
 | Meshing | gmsh (Python API) | **Done**: `nasal.simulate.mesh_side` |
 | Airflow ground truth | OpenFOAM v2606 (`opencfd/openfoam-run:2606` in Docker), simpleFoam | **Done**: `nasal.simulate`, `nasal-simulate` |
-| Fast stand-in model | PyTorch MLP | **Done**: `nasal.surrogate`, `nasal-surrogate` |
+| Real patient airways | NasalSeg CT labels, voxel hex mesh written as an OpenFOAM polyMesh | **Done**: `nasal.anatomy`, `nasal-patients` |
+| Fast stand-in model | PyTorch MLP (tubes), power law on measured geometry (patients) | **Done**: `nasal.surrogate`, `nasal-surrogate` |
 | Decision rules (standard and improved) | Plain Python functions | **Prototype**: `nasal.decision`, thresholds are placeholders pending ENT review |
 | Comparison and logging | pandas + JSON agent log | **Done**: `nasal-agents --log` |
 | Demo | Streamlit or Gradio with PyVista or Plotly | Planned |
@@ -36,7 +37,7 @@ The agent count stays at four: more agents mostly add latency and failure points
 
 ## Workflow
 
-1. **Generate cases**: the geometry tool makes a few hundred synthetic patients with known parameters. *(done)*
+1. **Generate cases**: the geometry tool makes a few hundred synthetic patients with known parameters. *(done)* Real airways from 130 NasalSeg CT scans are also built and measured. *(done; see Real patients)*
 2. **Simulate**: mesh each shape and run OpenFOAM for resistance by region. This takes the longest, so it starts first. *(done for a subset; see below)*
 3. **Train the fast model** on the simulation results, recording its error and speedup. *(done; see Fast surrogate)*
 4. **Wire up the agents**: the Case agent sets parameters, the Planner calls the fast model, the formula and what-if tools, the Critic checks the results and the Explainer writes the summary. *(done; the placeholder decision rules are not wired in yet)*
@@ -121,6 +122,31 @@ No constants have been fitted yet.
 - **Speed:** a prediction takes 0.15 ms on a laptop CPU. The median OpenFOAM case took 15 minutes of wall-clock time (both sides, 4 cores each), so the surrogate is about 6 million times faster.
 - **Weak spots:** the worst side is off by 74% and region values remain rough (see the mesh notes above). The agents' Critic flags large disagreements between the surrogate and the formula.
 
+## Real patients (NasalSeg)
+
+`nasal.anatomy` builds real airways from [NasalSeg](https://zenodo.org/records/13893419) (130 CT scans with voxel labels, CC BY 4.0, DOI 10.1038/s41597-024-04176-1). These are real anatomy, but their flow is still a model: rigid walls, no mucosa, a single steady breath.
+
+- **Labels:** by position in LPS coordinates, 1 and 2 are the right and left maxillary sinuses, 3 and 4 the right and left nasal cavities, and 5 the nasopharynx. `check_labels` verifies this for each scan. 3 scans (P047 to P049) fail the check; they are kept but marked `labels_ok = False`. Scans stored with a reversed axis are flipped on load.
+- **Domain:** both nasal cavities plus the nasopharynx; the sinuses are left out. Each nostril inlet is a flat cut where that cavity's cross-section first reaches 30% of its median. The outlet is a flat cut where the nasopharynx is wide (half its widest axial section). The narrow lower tail of the label is cut off because it otherwise took most of the pressure drop, and rhinomanometry measures pressure in the nasopharynx.
+- **Mesh:** every airway voxel (0.59 × 0.59 × 1.5 mm) becomes one hexahedral cell, written directly as an OpenFOAM polyMesh (median 65k cells). The mesh always passes `checkMesh` with zero non-orthogonality. The cost is stair-stepped walls.
+- **Solver:** the same simpleFoam k-omega SST setup as the tubes, with both nostrils at 150 Pa total pressure and the outlet at 0. One run gives the left and right flows. Regions are positions along each cavity (0–20% vestibule, 20–35% valve, 35–85% turbinate, the rest plus the nasopharynx choana), not anatomical landmarks.
+
+**Results:** 126 of 130 scans ran. 3 have a cavity or nasopharynx label that doesn't connect to the rest (P086, P098, P101), and P102 diverged twice. One more (P066) has a region boundary with no net flow and is left out of training, which leaves 125.
+
+- **Resistance:** median total nasal resistance is 0.146 Pa·s/cm³, ranging from 0.078 to 1.28, at a median 1031 cm³/s.
+- **Asymmetry:** 29 patients have one side over 1.5 times the other.
+- **Steadiness:** flow varied by at most 0.8% over the averaging window.
+
+**Patient surrogate:** each side is described by six measured numbers: volume, length, nostril area, narrowest and mean cross-section, and where the narrowest point is. A PyTorch MLP like the tube surrogate overfit these ~250 sides (27% mean and 1175% worst side error, cross-validated). A power law per region does better: ridge regression of log region resistance on log geometry (`PatientSurrogate`).
+
+| Mean absolute error vs OpenFOAM (5-fold, 125 patients) | Power law | Average patient |
+| --- | --- | --- |
+| Total resistance | 14.4% | 24.5% |
+| Side resistance | 16.3% | 29.9% |
+| Region resistance | 35.0% | 41.3% |
+
+It underpredicts the most obstructed sides (about 2.6 Pa·s/cm³ in OpenFOAM, predicted about 0.34), so the agents' Critic flags any patient where the surrogate and that patient's OpenFOAM result differ by more than 25%.
+
 ## Usage
 
 ```bash
@@ -153,6 +179,18 @@ nasal-surrogate --sim data/simulated.csv data/simulated_A.csv data/simulated_B.c
 ```
 
 It merges the files by `case_id`, prints the cross-validated error and speedup, and writes `data/surrogate.pt` and `data/surrogate_report.json`. Its tests are skipped without PyTorch.
+
+### Real patients
+
+```bash
+pip install -e ".[sim,patients]"
+# download NasalSeg.zip from https://zenodo.org/records/13893419 and unzip it to nasalseg/
+nasal-patients measure --labels nasalseg/labels                          # geometry of every patient -> data/patients.csv
+nasal-patients simulate --labels nasalseg/labels --ids P001 --procs 8    # OpenFOAM -> data/patient_sim.csv
+nasal-surrogate --patients --sim data/patient_sim.csv                     # -> data/patient_surrogate.json
+```
+
+`simulate` skips patients already in its output, so it can resume, and logs a failed patient and moves on. Each patient takes about 8 minutes on 4 cores. We ran 12 batches of `--procs 4` on a 48-core Brev instance, each with its own `--out`, and trained on all the files together. With `data/patient_sim.csv` and `data/patient_surrogate.json` present, `nasal-agents` also accepts requests about a patient by id (for example "patient P022: what if the left narrowest section were 30% wider?").
 
 ### Agents
 
