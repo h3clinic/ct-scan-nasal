@@ -1,5 +1,7 @@
 # Nasal0: 3-minute script (two speakers)
 
+**Live demo:** https://d36fd646c8e72bb746.gradio.live
+
 **YOU** drives the demo. **PANKAJ** opens, covers results and closes. Times are when each line starts.
 
 ---
@@ -22,7 +24,7 @@
 
 **1:40 · YOU** *(answer appears)*
 
-> "About six seconds. And the Critic flagged that the fast model and the simulation disagree here, so you know when not to trust the shortcut."
+> "A few seconds. And the Critic flagged that the fast model and the simulation disagree here, so you know when not to trust the shortcut."
 
 **1:55 · PANKAJ** *(gallery: Virtual surgery)*
 

@@ -1,6 +1,8 @@
 # Nasal0: NVIDIA x Red Hat Small Models Hack submission
 
-## Pitch
+**Live demo:** https://d36fd646c8e72bb746.gradio.live (runs on the Brev H100 next to the model)
+
+
 
 A blocked nose is usually judged by eye: a surgeon looks at a CT scan, sees a bent septum or big turbinates, and operates on what looks wrong. **Nasal0** asks where the air actually loses pressure.
 
