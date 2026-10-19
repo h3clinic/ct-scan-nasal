@@ -73,7 +73,9 @@ Everything here is simulation output. No CT images or labels are included.
 
 Rigid walls, one steady breath, no mucosa, voxel-resolution walls. The voxel septoplasty removes more airway than it adds, so it raises resistance in this model; that is a modeling artifact. NasalSeg contains duplicate scans (P002/P003, P009/P010, P080/P081).
 
-**Known issue in `patients/` (found after this release):** 9 NasalSeg label files (P025, P042, P074, P089, P100, P101, P108, P118, P129) have a vertical axis that is flipped in their header but not in their voxels. The OpenFOAM rows for those patients were computed on the upside-down airway, so their outlet cut is at the wrong end of the nasopharynx. Treat those rows as unreliable until they are re-run; the loader in the repository now corrects the orientation.
+**Fixed in `patients/openfoam_results.csv`:** 9 NasalSeg label files (P025, P042, P074, P089, P100, P101, P108, P118, P129) have a vertical axis that is flipped in their header but not in their voxels. The first release computed those patients' OpenFOAM rows on the upside-down airway, with the outlet cut at the wrong end of the nasopharynx. The 8 that have rows were re-run in the CT's orientation and their rows replaced; total resistance changed by −12% to +5%. P101 has no row, because its nasopharynx does not connect to the cavities in either orientation. The patient surrogate in `models/` was retrained on the corrected rows.
+
+**Known issue in `patients/virtual_surgery_openfoam.csv`:** P129's 8 rows were computed on the upside-down airway and have not been re-run.
 
 ## Source and license
 

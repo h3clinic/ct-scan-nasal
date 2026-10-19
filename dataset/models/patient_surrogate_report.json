@@ -11,20 +11,20 @@
   ],
   "model": "power law per region (ridge on log geometry)",
   "surrogate": {
-    "total_mean_pct": 14.412469560159751,
-    "total_max_pct": 86.54751652237675,
-    "side_mean_pct": 16.326357545047284,
-    "side_max_pct": 87.17945706903642,
-    "region_mean_pct": 35.04705271330293,
-    "region_max_pct": 843.92040583732
+    "total_mean_pct": 14.392823227806545,
+    "total_max_pct": 86.59741036947206,
+    "side_mean_pct": 16.33768412715464,
+    "side_max_pct": 87.38822588979134,
+    "region_mean_pct": 35.38648513154689,
+    "region_max_pct": 848.0970581674244
   },
   "average_patient": {
-    "total_mean_pct": 24.52831281527724,
-    "total_max_pct": 99.45019576514733,
-    "side_mean_pct": 29.89316093912204,
-    "side_max_pct": 152.04182166026348,
-    "region_mean_pct": 41.32838858611337,
-    "region_max_pct": 803.8132039237644
+    "total_mean_pct": 24.568210752828854,
+    "total_max_pct": 98.73322925207071,
+    "side_mean_pct": 29.923207667358152,
+    "side_max_pct": 151.10365205009754,
+    "region_mean_pct": 41.54239964878033,
+    "region_max_pct": 807.4895685756948
   },
-  "predict_seconds_per_case": 0.00010393400000111796
+  "predict_seconds_per_case": 0.0002373405000253115
 }

@@ -142,7 +142,7 @@ No constants have been fitted yet.
 `nasal.anatomy` builds real airways from [NasalSeg](https://zenodo.org/records/13893419) (130 CT scans with voxel labels, CC BY 4.0, DOI 10.1038/s41597-024-04176-1). These are real anatomy, but their flow is still a model: rigid walls, no mucosa, a single steady breath.
 
 - **Labels:** by position in LPS coordinates, 1 and 2 are the right and left maxillary sinuses, 3 and 4 the right and left nasal cavities, and 5 the nasopharynx. `check_labels` verifies this for each scan. 3 scans (P047 to P049) fail the check; they are kept but marked `labels_ok = False`. Scans stored with a reversed axis are flipped on load.
-- **Flipped label headers:** 9 label files (P025, P042, P074, P089, P100, P101, P108, P118, P129) claim a reversed vertical axis, with an origin outside their own scan, while their voxels are stored in the CT's order. Read with that header, only about 40% of the airway label lies on air; in the CT's orientation, over 88% does (see CT to airway). `load_labels` now uses the CT's orientation when the image sits next to the labels (`images/` beside `labels/`, as NasalSeg ships them). **The OpenFOAM results above were computed before this fix**, so for these 9 patients the airway was upside down and the outlet cut sat at the wrong end of the nasopharynx; they need to be re-run.
+- **Flipped label headers:** 9 label files (P025, P042, P074, P089, P100, P101, P108, P118, P129) claim a reversed vertical axis, with an origin outside their own scan, while their voxels are stored in the CT's order. Read with that header, only about 40% of the airway label lies on air; in the CT's orientation, over 88% does (see CT to airway). `load_labels` now uses the CT's orientation when the image sits next to the labels (`images/` beside `labels/`, as NasalSeg ships them). The first OpenFOAM runs of these patients used the upside-down airway, with the outlet cut at the wrong end of the nasopharynx. All 8 that had run were re-run in the CT's orientation: total resistance changed by −12% to +5% (P100 −12%, P042 −10%, P089 −7%, P108 −7%, P025 −6%, P129 −4%, P118 −4%, P074 +5%), and each side's resistance stayed within 3 percentage points of its total's change. P101 still fails, for the reason below. The results below use the re-run rows.
 - **Domain:** both nasal cavities plus the nasopharynx; the sinuses are left out. Each nostril inlet is a flat cut where that cavity's cross-section first reaches 30% of its median. The outlet is a flat cut where the nasopharynx is wide (half its widest axial section). The narrow lower tail of the label is cut off because it otherwise took most of the pressure drop, and rhinomanometry measures pressure in the nasopharynx.
 - **Mesh:** every airway voxel (0.59 × 0.59 × 1.5 mm) becomes one hexahedral cell, written directly as an OpenFOAM polyMesh (median 65k cells). The mesh always passes `checkMesh` with zero non-orthogonality. The cost is stair-stepped walls.
 - **Solver:** the same simpleFoam k-omega SST setup as the tubes, with both nostrils at 150 Pa total pressure and the outlet at 0. One run gives the left and right flows. Regions are positions along each cavity (0–20% vestibule, 20–35% valve, 35–85% turbinate, the rest plus the nasopharynx choana), not anatomical landmarks.
@@ -157,9 +157,9 @@ No constants have been fitted yet.
 
 | Mean absolute error vs OpenFOAM (5-fold, 125 patients) | Power law | Average patient |
 | --- | --- | --- |
-| Total resistance | 14.4% | 24.5% |
+| Total resistance | 14.4% | 24.6% |
 | Side resistance | 16.3% | 29.9% |
-| Region resistance | 35.0% | 41.3% |
+| Region resistance | 35.4% | 41.5% |
 
 It underpredicts the most obstructed sides (about 2.6 Pa·s/cm³ in OpenFOAM, predicted about 0.34), so the agents' Critic flags any patient where the surrogate and that patient's OpenFOAM result differ by more than 25%.
 
@@ -333,7 +333,7 @@ We ran the 12 most obstructed patients whose labels pass the position check. 2 p
 - **Best plan:** turbinate reduction with valve repair was best or near-best for every patient (mean drop 10.2%, up to 26.7%). Turbinate reduction alone averaged 7.8% and valve repair alone 1.9%.
 - **Septoplasty raised resistance** in this model (mean −7.9% alone). The voxel version removes more airway than it adds, so this is an artifact of the model, not a finding about septoplasty. Workflow++ never chose it; the standard rule chose it for 2 patients.
 - **The surrogate ranks plans better than it sizes them:** its predicted drops correlate only 0.47 with OpenFOAM's, with a mean error of 6.1 percentage points. It still picked the right plan, because the plans' differences were large.
-- **Limits:** this is a 10-patient sample of the most obstructed airways, with one-layer changes, steady flow and rigid walls. The rules' thresholds are unreviewed placeholders.
+- **Limits:** this is a 10-patient sample of the most obstructed airways, with one-layer changes, steady flow and rigid walls. The rules' thresholds are unreviewed placeholders. P129 has a flipped label header (see Real patients), and its 8 surgery runs were made before that fix and have not been re-run.
 
 ## Keeping docs in sync
 
