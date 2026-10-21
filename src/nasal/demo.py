@@ -18,6 +18,7 @@ import pandas as pd
 
 from . import agents, anatomy
 from .params import REGIONS, SIDES
+from .patient_flow import PatientFlow
 
 DEFAULT_PATIENT = "P022"  # one side has three times the other's resistance
 DEFAULT_QUESTION = "Which side is harder to breathe through, and what if the narrower side's narrowest section were widened by 30%?"
@@ -126,8 +127,7 @@ def describe_step(step: dict) -> str | None:
     return None
 
 
-def ask_agents(pid, question, patients, surrogate, labels_dir, surgery, provider: str = "local",
-               history: list[dict] | None = None):
+def ask_agents(pid, question, patients, flow, provider: str = "local", history: list[dict] | None = None):
     """Run the four agents on one patient, yielding (steps markdown, answer markdown) as they go.
     With `history` (this session's earlier turns), the new turn is appended to it on success."""
     steps, q = [], queue.Queue()
@@ -135,10 +135,8 @@ def ask_agents(pid, question, patients, surrogate, labels_dir, surgery, provider
 
     def work():
         try:
-            result["out"] = agents.run_pipeline(f"Patient {pid}. {question}", patients=patients,
-                                                patient_surrogate=surrogate, listener=q.put,
-                                                labels_dir=Path(labels_dir), surgery=surgery,
-                                                provider=provider, history=history)
+            result["out"] = agents.run_pipeline(f"Patient {pid}. {question}", patients=patients, patient_flow=flow,
+                                                listener=q.put, provider=provider, history=history)
         except Exception as err:  # shown in the UI instead of crashing the app
             result["error"] = f"{type(err).__name__}: {err}"
         q.put(None)
@@ -170,6 +168,7 @@ def build_app(labels_dir: Path, sim_path: Path = agents.PATIENTS_PATH, model_pat
 
     patients, surrogate = agents.load_patients(sim_path, model_path)
     surgery = agents.load_surgery()
+    flow = PatientFlow(patients, surgery, labels_dir) if patients is not None else None
     if patients is None:
         raise SystemExit(f"need {sim_path} and {model_path}: run nasal-patients simulate and nasal-surrogate --patients")
     ids = list(patients.patient)
@@ -198,7 +197,7 @@ def build_app(labels_dir: Path, sim_path: Path = agents.PATIENTS_PATH, model_pat
         return fig, comparison_table(row, base), info
 
     def ask(pid, question):
-        yield from ask_agents(pid, question, patients, surrogate, labels_dir, surgery)
+        yield from ask_agents(pid, question, patients, flow)
 
     with gr.Blocks(title="Nasal0") as app:
         gr.Markdown("# Nasal0")

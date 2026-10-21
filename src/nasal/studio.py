@@ -2,15 +2,13 @@
 
 Run `nasal-studio --images <NasalSeg images> --labels <NasalSeg labels>`. Every resistance shown
 comes from OpenFOAM: the stored run where one exists (`data/patient_sim.csv`, `data/patient_surgery.csv`),
-otherwise a run started from the app in Docker (several minutes each, cached for the session).
-The patient surrogate is not used: on some airways it is off by more than 30%.
-Automatic segmentation needs `data/segment_model.joblib` from `nasal-segment train`. The agents
-need the vLLM endpoint (NASAL_LLM_URL); the rest works without it.
+otherwise a run started from the app in Docker (a few minutes each, kept for the session and shared with
+the agents through `nasal.patient_flow`). The patient surrogate is not used: on some airways it is off by
+more than 30%. Automatic segmentation needs `data/segment_model.joblib` from `nasal-segment train`. The
+agents need the vLLM endpoint (NASAL_LLM_URL) or OPENAI_API_KEY; the rest works without them.
 """
 
-import itertools
 import os
-import threading
 import time
 from pathlib import Path
 
@@ -20,22 +18,10 @@ import pandas as pd
 from . import agents, anatomy, demo
 from .decision import patient as ps
 from .params import REGIONS, SIDES
+from .patient_flow import _RUN_ID, FAST_ITERATIONS, WORK_DIR, PatientFlow, run_openfoam
 
-WORK_DIR = Path("data/studio")  # OpenFOAM cases run from the app
 PROCEDURE_NAMES = {"Turbinate reduction": "turbinate_reduction", "Valve repair": "valve_repair",
                    "Septoplasty": "septoplasty"}
-# App runs stop at 900 iterations instead of 3000: in the 13 stored 3000-iteration patient runs, total flow
-# averaged up to iteration 600 was already within 0.11% of the final value, and P022 run at 900 iterations
-# on 8 cores matched its stored run within 0.22% in every region (237 s, against about 25 minutes before).
-FAST_ITERATIONS = 900
-_RUN_ID = itertools.count()
-
-
-def run_settings(cores: int | None = None, procs: int | None = None) -> tuple[int, int]:
-    """(processes per case, cases run at once) for this machine; leaves two cores free."""
-    cores = max(1, (cores or os.cpu_count() or 4) - 2)
-    procs = procs or min(8, cores)
-    return procs, max(1, cores // procs)
 
 
 def plan_from_choices(choices: list[str]) -> tuple[str, ...]:
@@ -105,16 +91,6 @@ def airway_figure(surface: dict, title: str, result: dict | None = None, changes
     if changes:
         fig.update_layout(showlegend=True, legend={"x": 0, "y": 1})
     return fig
-
-
-def run_openfoam(tags: np.ndarray, spacing: np.ndarray, origin: np.ndarray, cuts: dict, case_dir: Path,
-                 procs: int = 8, max_iterations: int = FAST_ITERATIONS) -> dict:
-    """Mesh the airway, run simpleFoam in Docker and read the result (a few minutes)."""
-    from .simulate import run_case
-
-    geometry = anatomy.write_airway_case(case_dir, tags, spacing, origin, cuts, procs, max_iterations=max_iterations)
-    run_case(case_dir)
-    return {**geometry, **anatomy.read_patient(case_dir, max_iterations=max_iterations)}
 
 
 def summary(result: dict) -> str:
@@ -219,34 +195,31 @@ def console_html(entries: list[dict]) -> str:
 
 
 def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIENTS_PATH,
-              model_path: Path = agents.PATIENT_SURROGATE_PATH, segment_model: Path | None = None,
+              segment_model: Path | None = None,
               procs: int | None = None, iterations: int = FAST_ITERATIONS):
     import gradio as gr
 
     from . import segment as sg
 
-    patients, surrogate = agents.load_patients(sim_path, model_path)  # the surrogate is only passed on to the agents
+    patients = agents.load_patient_table(sim_path)
     surgery = agents.load_surgery()
+    # one OpenFOAM source for the studio and the agents: stored runs plus live runs made in this app
+    flow = PatientFlow(patients, surgery, labels_dir, live=True, procs=procs, iterations=iterations)
     segment_model = Path(segment_model or sg.MODEL_PATH)
-    stored_none = {r["patient"]: r for r in patients.to_dict("records")} if patients is not None else {}
     images = {f.name.split("_")[0]: f for f in Path(images_dir).glob("*_img.nrrd")}
     labels = {f.name.split("_")[0]: f for f in Path(labels_dir).glob("*_seg.nrrd")}
     ids = sorted(set(images) & set(labels))
     default = demo.DEFAULT_PATIENT if demo.DEFAULT_PATIENT in ids else ids[0]
-    procs, parallel = run_settings(procs=procs)
-    session_runs: dict[tuple[str, str], dict] = {}  # (airway key, plan label) -> OpenFOAM record run from the app
+    procs, parallel = flow.procs, flow.parallel
+    session_runs: dict[tuple[str, str], dict] = {}  # runs on airways that are not NasalSeg expert labels
     ready = f"OpenFOAM local · {procs} cores × {parallel} cases · {iterations} iterations"
 
     def openfoam_results(st) -> dict[str, dict]:
         """Plan label -> OpenFOAM record for this airway: stored runs (expert labels only) plus runs made here."""
-        out = {}
         if st["expert"]:
-            if st["name"] in stored_none:
-                out["none"] = stored_none[st["name"]]
-            if surgery is not None:
-                out.update({r["plan"]: r for r in surgery[surgery.patient == st["name"]].to_dict("records")})
-        out.update({plan: r for (key, plan), r in session_runs.items() if key == st["key"]})
-        return out
+            labels_ = ["none", *(ps.label(p) for p in ps.candidate_plans())]
+            return {label: r for label in labels_ if (r := flow.known(st["name"], label)) is not None}
+        return {plan: r for (key, plan), r in session_runs.items() if key == st["key"]}
 
     def load_airway(pid, upload, source):
         """-> state dict with the cut airway, or raises gr.Error."""
@@ -305,8 +278,11 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         def work(label, tags):
             case_dir = WORK_DIR / st["name"] / f"{label}_{next(_RUN_ID)}"
             try:
-                session_runs[(st["key"], label)] = run_openfoam(tags, st["spacing"], st["origin"], st["cuts"], case_dir,
-                                                                procs, iterations)
+                record = run_openfoam(tags, st["spacing"], st["origin"], st["cuts"], case_dir, procs, iterations)
+                if st["expert"]:  # shared with the agents
+                    flow.runs[(st["name"], label)] = {**record, "source": f"OpenFOAM run now ({iterations} iterations)"}
+                else:
+                    session_runs[(st["key"], label)] = record
             except Exception as err:  # shown in the UI
                 errors[label] = f"{type(err).__name__}: {str(err).splitlines()[0] if str(err) else ''}"
 
@@ -399,8 +375,7 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
             raise gr.Error("type a question first")
         log = [*log, {"role": "you", "text": f"{pid} · {question}", "meta": "you"}]
         steps = {"role": "system", "text": "Running…", "meta": provider}
-        for steps_md, answer_md in demo.ask_agents(pid, question, patients, surrogate, labels_dir, surgery,
-                                                   provider=backend, history=memory):
+        for steps_md, answer_md in demo.ask_agents(pid, question, patients, flow, provider=backend, history=memory):
             steps["text"] = " · ".join(line.strip("-_ ").replace("**", "").replace("`", "")
                                        for line in steps_md.splitlines() if line.strip()) or "Running…"
             shown = [*log, steps] + ([{"role": "agents", "text": answer_md, "meta": "agents"}] if answer_md else [])
@@ -483,13 +458,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--images", type=Path, required=True, help="NasalSeg images folder (*_img.nrrd)")
     parser.add_argument("--labels", type=Path, required=True, help="NasalSeg labels folder (*_seg.nrrd)")
     parser.add_argument("--sim", type=Path, default=agents.PATIENTS_PATH, help="stored OpenFOAM runs of the untouched airways")
-    parser.add_argument("--model", type=Path, default=agents.PATIENT_SURROGATE_PATH, help="patient surrogate, used only by the agents")
     parser.add_argument("--segment-model", type=Path, default=None, help="default: data/segment_model.joblib")
     parser.add_argument("--procs", type=int, default=None, help="cores per OpenFOAM case (default: up to 8)")
     parser.add_argument("--iterations", type=int, default=FAST_ITERATIONS, help="solver iterations per app run")
     parser.add_argument("--port", type=int, default=7861)
     args = parser.parse_args(argv)
-    app = build_app(args.images, args.labels, args.sim, args.model, args.segment_model, args.procs, args.iterations)
+    app = build_app(args.images, args.labels, args.sim, args.segment_model, args.procs, args.iterations)
     app.launch(server_port=args.port, server_name="127.0.0.1", css=STUDIO_CSS,
                theme=gr.themes.Base(neutral_hue="neutral", text_size="sm", spacing_size="sm", radius_size="sm"), js="() => document.body.classList.add('dark')")
 

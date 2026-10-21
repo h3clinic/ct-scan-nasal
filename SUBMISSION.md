@@ -25,7 +25,7 @@ When we tested virtual surgery on 10 obstructed real airways, the map-driven pla
 
 ## Tracks and bounties
 
-- **Track 3, tool calling (main fit).** One model makes every call through validated tools. Code checks each call's arguments against a JSON schema and the parameter ranges, and sends errors back to the model to fix. Unknown tools are rejected. The Critic can cite only flag ids that the code checks produced. The Explainer's numbers are checked against the tool results: one retry, then a summary written by code. Measured on 16 fixed probes against the live endpoint (`nasal-agents --eval`):
+- **Track 3, tool calling (main fit).** One model makes every call through validated tools. Code checks each call's arguments against a JSON schema and the parameter ranges, and sends errors back to the model to fix. Unknown tools are rejected. The Critic can cite only flag ids that the code checks produced. The Explainer's numbers are checked against the tool results: one retry, then a summary written by code. Measured on 16 fixed probes against the live endpoint (`nasal-agents --eval`), before the patient tools switched from the surrogate to OpenFOAM results; not yet repeated:
   - **Runs:** 16/16 completed, with a median of 5.9 s per full four-agent run.
   - **Case choice:** 15/16 chose the right case. The miss: "septum to the right 0.5" was set as +0.5, a sign error no code check can catch.
   - **What-ifs:** 6/6 run when the request asked for one.

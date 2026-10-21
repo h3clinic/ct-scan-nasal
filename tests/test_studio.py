@@ -49,9 +49,3 @@ def test_plan_ranking_lists_every_plan_with_openfoam_drops():
     assert table["standard rule"].tolist().count("picks") == 1 and table["standard rule"].iloc[1] == "picks"
     assert set(studio.plan_ranking({}, ())["OpenFOAM drop %"]) == {"not run"}
 
-
-def test_run_settings_split_cores_between_cases():
-    assert studio.run_settings(cores=20) == (8, 2)
-    assert studio.run_settings(cores=20, procs=6) == (6, 3)
-    assert studio.run_settings(cores=4) == (2, 1)
-    assert studio.run_settings(cores=1) == (1, 1)

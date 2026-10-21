@@ -61,7 +61,7 @@ Everything here is simulation output. No CT images or labels are included.
 - `total_resistance`, `left_resistance`, `right_resistance`: Pa·s/cm³ at 150 Pa.
 - `{side}_{region}_resistance`: per region, regions `vestibule`, `valve`, `turbinate`, `choana`.
 - `*_flow_cm3_s`: flow in cm³/s.
-- Virtual surgery: `plan` (procedures joined by `+`, or `none`), `surrogate_total` (surrogate prediction for that plan), `standard_plan` (look-at-the-scan rule), `plus_plus_plan` (map-driven Workflow++ rule).
+- Virtual surgery: `plan` (procedures joined by `+`, or `none`), `surrogate_total` (prediction for that plan by `models/patient_surrogate.json`, recomputed for every patient after the retraining), `standard_plan` (look-at-the-scan rule), `plus_plus_plan` (map-driven Workflow++ rule).
 
 ## Results in brief
 

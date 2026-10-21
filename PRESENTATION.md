@@ -77,10 +77,10 @@ Yes, the airways come from NasalSeg, a public dataset of 130 CT scans. We simula
 It's a standard steady-state OpenFOAM setup (k-omega SST turbulence model). The median resistance, 0.146 Pa·s/cm³, is in the range measured on real adult noses. The walls are rigid and at voxel resolution, so the absolute numbers are approximate; comparing plans is the strong use.
 
 **Why a surrogate instead of always simulating?**
-A simulation takes minutes on many cores. The surrogate takes well under a millisecond, which is what makes sliders and agent answers instant. When it disagrees with a simulation by more than 25%, the Critic says so.
+A simulation takes minutes on many cores. The surrogate takes well under a millisecond, which is what makes the demo's sliders instant. On some airways it is off by more than 30%, so for real patients the agents read OpenFOAM results instead, and the studio runs a missing case in a few minutes.
 
 **How good is the surrogate?**
-On real airways it averages a 16% error per side, against 30% for simply guessing the average patient. Its estimates of how much a surgery plan helps are rough (correlation 0.50 with OpenFOAM), which is why plans were scored in OpenFOAM.
+On real airways it averages a 16% error per side, against 30% for simply guessing the average patient. Its estimates of how much a surgery plan helps are rough (correlation 0.51 with OpenFOAM), which is why plans were scored in OpenFOAM.
 
 **Why one model for four agents?**
 Four roles with separate tools and checks, on one small model, keep it fast and cheap: a whole run takes about 6 seconds. More agents mostly add latency and failure points.

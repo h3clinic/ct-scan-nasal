@@ -8,7 +8,7 @@ Built for the NVIDIA x Red Hat Small Models Hack; see [SUBMISSION.md](SUBMISSION
 
 - **Real anatomy:** 130 NasalSeg CT airways, 126 simulated in OpenFOAM on NVIDIA Brev (median nasal resistance 0.146 Pa·s/cm³ at 150 Pa).
 - **Fast surrogate:** under 0.2 ms per prediction, 16.3% mean side error (cross-validated) against 29.9% for "average patient".
-- **Four agents** on NVIDIA Nemotron 3.5 Lightning 30B-A3B (3B active), served with vLLM. On 16 fixed probes (`nasal-agents --eval`), all 16 runs completed and 15 set the right case. 3 invalid tool calls out of 98 were caught by code and recovered, and every number the Explainer wrote either passed the code check or was replaced by the code template.
+- **Four agents** on NVIDIA Nemotron 3.5 Lightning 30B-A3B (3B active), served with vLLM. On 16 fixed probes (`nasal-agents --eval`), all 16 runs completed and 15 set the right case. 3 invalid tool calls out of 98 were caught by code and recovered, and every number the Explainer wrote either passed the code check or was replaced by the code template. That run predates the switch of the patient tools from the surrogate to OpenFOAM and has not been repeated. For real patients, every number the agents report now comes from OpenFOAM.
 - **Virtual surgery, verified in OpenFOAM:** on 10 obstructed real airways, Workflow++ reached the best plan's drop for 10 of 10, the standard rule for 1 of 10.
 - **Data:** every simulated result (125 patients, 96 surgery runs, 106 idealized airways, surrogates, agent evaluation) is in [dataset/](dataset/README.md), CC BY 4.0.
 - **Demo:** live at https://7a5747cfe97ac7e65b.gradio.live; `nasal-demo`, a 3D resistance map of a real patient with what-if sliders and live agent steps.
@@ -27,11 +27,11 @@ All four agents run on one served model, [NVIDIA Nemotron 3.5 Lightning 30B-A3B]
 | Agent | Model | Tools it may call | Job |
 | --- | --- | --- | --- |
 | Case | Nemotron 3.5 Lightning 30B-A3B | `set_case`, `set_patient` | Picks a real NasalSeg patient by id, or turns a description into the three case parameters; code validates them and returns errors for the model to fix |
-| Planner | Nemotron 3.5 Lightning 30B-A3B | `predict_resistance`, `formula_resistance`, `what_if`, `patient_resistance`, `recommend_surgery`, `patient_what_if`, `patient_surgery_options`, `finish` | Decides which physics tools answer the request; for surgery questions, scores every combination of turbinate reduction, valve repair and septoplasty on the patient's CT airway and attaches the OpenFOAM check where one was run |
+| Planner | Nemotron 3.5 Lightning 30B-A3B | `predict_resistance`, `formula_resistance`, `what_if`, `patient_resistance`, `recommend_surgery`, `patient_what_if`, `patient_surgery_options`, `finish` | Decides which physics tools answer the request. For a real patient, every tool reads OpenFOAM: the patient's own run, one procedure plan's run, or all 7 plans for surgery questions (stored runs, or new runs with `--live` and in the studio) |
 | Critic | Nemotron 3.5 Lightning 30B-A3B | `review_results`, `check_parameters`, `report_flags` | Runs the code checks and picks which flags to show; it can cite only flag ids the checks produced |
 | Explainer | Nemotron 3.5 Lightning 30B-A3B | none | Writes the plain-language summary; code rejects any number not in the tool results and retries once, then falls back to a template written by code |
 
-The agent count stays at four: more agents mostly add latency and failure points. Surgery questions go through the decision rules in `nasal.decision`: `recommend_surgery` runs the final-stage recommender on a synthetic case, and `patient_surgery_options` applies the same Workflow++ rule, technique reasons and dominant-region check to a real CT airway. The rule thresholds are placeholders until an ENT reviews them.
+The agent count stays at four: more agents mostly add latency and failure points. Surgery questions go through the decision rules in `nasal.decision`: `recommend_surgery` runs the final-stage recommender on a synthetic case, and `patient_surgery_options` applies the same Workflow++ rule, technique reasons and dominant-region check to a real CT airway, using OpenFOAM's result for each plan (`nasal.patient_flow`). The rule thresholds are placeholders until an ENT reviews them.
 
 ### Tools (plain code, not language models)
 
@@ -162,7 +162,7 @@ No constants have been fitted yet.
 | Side resistance | 16.3% | 29.9% |
 | Region resistance | 35.4% | 41.5% |
 
-It underpredicts the most obstructed sides (about 2.6 Pa·s/cm³ in OpenFOAM, predicted about 0.34), so the agents' Critic flags any patient where the surrogate and that patient's OpenFOAM result differ by more than 25%.
+It underpredicts the most obstructed sides (about 2.6 Pa·s/cm³ in OpenFOAM, predicted about 0.34). The agents therefore use OpenFOAM results for real patients, not this surrogate; the demo's instant what-if sliders still use it.
 
 ## CT to airway (no expert labels)
 
@@ -276,7 +276,7 @@ One window, laid out like the [VOCO](https://github.com/h3clinic/VOCO) desktop a
 - **Airflow:** every resistance shown comes from OpenFOAM: the stored run where one exists, otherwise **Run airflow** starts one in Docker. The patient surrogate is not used here, because on some airways it is off by more than 30% (P022: 0.141 against OpenFOAM's 0.263 Pa·s/cm³).
 - **Virtual surgery:** tick turbinate reduction, valve repair or septoplasty, see the voxels each one adds, then run OpenFOAM on the plan or on all 7 plans. The table ranks the plans by OpenFOAM's resistance drop and marks the standard rule's pick.
 - **Faster local runs:** app runs stop at 900 iterations instead of 3000 and use up to 8 cores each, two cases at a time on a 20-core machine (`--procs`, `--iterations`). In the 13 stored 3000-iteration patient runs, total flow at iteration 600 was already within 0.11% of the final value, and P022 run this way matched its stored run within 0.22% in every region in 237 s.
-- **Agents:** the console sends a question to the four agents. **Local Nemotron** uses the vLLM endpoint as above. **OpenAI API** uses `OPENAI_API_KEY` and `NASAL_OPENAI_MODEL` (default `gpt-4.1-mini`) with `store=False`. Earlier questions are kept as context only in the app's memory for that browser session, and **Clear** forgets them. Only the patient id, the question and computed numbers are sent, never the CT. Under OpenAI's API policy that data is not used for training, but it may be kept up to 30 days for abuse monitoring unless the organization has zero data retention. OpenAI does not publish its models' sizes, so this backend is outside the project's 33B limit; Nemotron stays the default.
+- **Agents:** the console sends a question to the four agents, which read the same OpenFOAM results and can start the same runs as the app. **Local Nemotron** uses the vLLM endpoint as above. **OpenAI API** uses `OPENAI_API_KEY` and `NASAL_OPENAI_MODEL` (default `gpt-4.1-mini`) with `store=False`. Earlier questions are kept as context only in the app's memory for that browser session, and **Clear** forgets them. Only the patient id, the question and computed numbers are sent, never the CT. Under OpenAI's API policy that data is not used for training, but it may be kept up to 30 days for abuse monitoring unless the organization has zero data retention. OpenAI does not publish its models' sizes, so this backend is outside the project's 33B limit; Nemotron stays the default.
 
 ### Agents
 
@@ -300,7 +300,9 @@ nasal-agents "Narrow valve, maybe 9 degrees, septum bends left. What if the valv
 
 It prints the summary and writes every model turn, tool call, tool result and check to `data/agent_log.json`.
 
-`nasal-agents --eval` runs 16 fixed probes (`nasal.agent_eval`), scores them in code and writes `data/agent_eval.json`. The probes include patient ids, a what-if, an unknown patient, an out-of-range valve angle and plain descriptions. Our run against the Brev endpoint:
+For a real patient (`nasal-agents "Patient P022: which surgery?"`), resistance, procedure what-ifs and surgery options come from the stored OpenFOAM runs (`data/patient_sim.csv`, `data/patient_surgery.csv`). Surgery options need all 7 plans, which are stored for the 12 patients in Step 5. `--live --labels nasalseg/labels` runs OpenFOAM in Docker for anything missing (900 iterations, a few minutes per case); without it the tool says the run is missing instead of estimating. `--openai` uses OpenAI's API instead of vLLM (see Studio).
+
+`nasal-agents --eval` runs 16 fixed probes (`nasal.agent_eval`), scores them in code and writes `data/agent_eval.json`. The probes include patient ids, what-ifs, an unknown patient, an out-of-range valve angle and plain descriptions. The patient what-if probes now ask about procedures ("what if the turbinates were reduced?") instead of widening the narrowest section by a percentage, which only the surrogate could answer. Our run against the Brev endpoint, made with the earlier surrogate-based patient tools and probes and not yet repeated:
 
 - **Runs:** 16/16 completed, with a median of 5.9 s per four-agent run.
 - **Case choice:** 15/16 set the right case. The miss: "septum to the right 0.5" became +0.5, which means the left in this project, and no code check can catch a wrong sign.
@@ -347,7 +349,7 @@ We ran the 12 most obstructed patients whose labels pass the position check. 2 p
 
 - **Best plan:** turbinate reduction with valve repair was best or near-best for every patient (mean drop 10.5%, up to 26.7%). Turbinate reduction alone averaged 8.2% and valve repair alone 1.9%.
 - **Septoplasty raised resistance** in this model (mean −8.3% alone). The voxel version removes more airway than it adds, so this is an artifact of the model, not a finding about septoplasty. Workflow++ never chose it; the standard rule chose it for 2 patients.
-- **The surrogate ranks plans better than it sizes them:** its predicted drops correlate only 0.50 with OpenFOAM's, with a mean error of 6.3 percentage points. It still picked the right plan, because the plans' differences were large.
+- **The surrogate ranks plans better than it sizes them:** its predicted drops correlate only 0.51 with OpenFOAM's, with a mean error of 6.2 percentage points (all 12 patients scored with the current surrogate in `dataset/models/`). It still picked the right plan, because the plans' differences were large.
 - **Limits:** this is a 10-patient sample of the most obstructed airways, with one-layer changes, steady flow and rigid walls. The rules' thresholds are unreviewed placeholders.
 
 ## Keeping docs in sync

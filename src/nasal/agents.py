@@ -5,8 +5,9 @@ default) with its own instructions and its own tools:
 
 - Case: turns a description into case parameters by calling `set_case`. Code
   validates the arguments against PARAM_SPECS and sends errors back to the model.
-- Planner: decides which physics tools to run (surrogate, formula baseline,
-  what-if changes). The tools compute every number.
+- Planner: decides which physics tools to run: OpenFOAM results and virtual
+  surgery for real patients; surrogate, formula baseline and what-if changes
+  for synthetic cases. The tools compute every number.
 - Critic: runs the code checks (`review_results`) and reports flags, citing
   only flag ids the checks produced.
 - Explainer: writes the plain-language summary. Code rejects any number in the
@@ -27,6 +28,7 @@ from typing import Callable
 
 import numpy as np
 
+from .decision.patient import PATIENT_PROCEDURES
 from .params import PARAM_SPECS, REGIONS, SIDES, CaseParams
 from .resistance import REFERENCE_PRESSURE, evaluate
 
@@ -43,7 +45,6 @@ SURROGATE_PATH = Path("data/surrogate.pt")
 MAX_TURNS = 6
 PLANNER_MAX_TURNS = 10  # surgery questions ask for several what-ifs
 DISAGREEMENT_FLAG_PCT = 25.0  # surrogate vs formula, a model-agreement check, not a clinical threshold
-EXTRAPOLATION_SD = 3.0  # patient geometry this many std devs from the training mean is flagged
 PATIENTS_PATH = Path("data/patient_sim.csv")
 PATIENT_SURROGATE_PATH = Path("data/patient_surrogate.json")
 SURGERY_PATH = Path("data/patient_surgery.csv")  # OpenFOAM on every plan, from nasal-patients surgery
@@ -100,10 +101,8 @@ class Tools:
     case: CaseParams | None = None
     results: dict = field(default_factory=dict)
     patients: object | None = None  # DataFrame of NasalSeg patients (geometry, and OpenFOAM results if run)
-    patient_surrogate: object | None = None
     patient: dict | None = None
-    labels_dir: Path | None = None  # NasalSeg *_seg.nrrd files, needed for virtual surgery
-    surgery: object | None = None  # DataFrame of OpenFOAM surgery runs, if any
+    flow: object | None = None  # nasal.patient_flow.PatientFlow: every patient resistance comes from OpenFOAM
 
     # ---- real patients (NasalSeg) ----
 
@@ -122,40 +121,37 @@ class Tools:
                     if any(k.startswith(f"{s}_") for s in SIDES) and k.endswith(("_mm2", "_mm", "_cm3"))}
         return {"patient_id": self.patient["patient"], "geometry": geometry, "valid": True}
 
-    def _patient_predict(self, geometry: dict) -> tuple[str, dict]:
-        if self.patient_surrogate is None:
-            raise ToolError("no trained patient surrogate; run nasal-surrogate --patients first")
-        return "patient surrogate (power law fitted to OpenFOAM on real airways)", self.patient_surrogate.predict(geometry)
+    def _openfoam(self, pid: str, plans: list[tuple[str, ...]]) -> dict[tuple[str, ...], dict]:
+        """OpenFOAM records for the patient's plans; () is the untouched airway."""
+        if self.flow is None:
+            raise ToolError("no OpenFOAM results are loaded for real patients")
+        try:
+            return self.flow.records(pid, plans)
+        except LookupError as err:
+            raise ToolError(str(err)) from err
 
     def patient_resistance(self, args: dict) -> dict:
         row = self._patient_row(args)
-        source, record = self._patient_predict(row)
-        out = {"source": source, "patient_id": row["patient"], **_summary(record)}
+        record = self._openfoam(row["patient"], [()])[()]
+        out = {"source": f"OpenFOAM on this patient's CT airway, {record['source']}", "patient_id": row["patient"],
+               **_summary(record)}
         self.results["prediction"] = out
-        if not np.isnan(row.get("total_resistance", np.nan)):
-            self.results["openfoam"] = {"source": "OpenFOAM on this patient's CT airway", **_summary(row)}
-            out["openfoam_total_resistance"] = self.results["openfoam"]["total_resistance"]
         return out
 
     def patient_what_if(self, args: dict) -> dict:
         row = self._patient_row(args)
-        side = str(args.get("side", "")).lower()
-        if side not in SIDES:
-            raise ToolError("side must be 'left' or 'right'")
-        try:
-            pct = float(args.get("narrowest_area_change_pct"))
-        except (TypeError, ValueError) as err:
-            raise ToolError("narrowest_area_change_pct must be a number") from err
-        if not -50 <= pct <= 100:
-            raise ToolError("narrowest_area_change_pct must be between -50 and 100")
-        changed = dict(row)
-        changed[f"{side}_min_area_mm2"] = row[f"{side}_min_area_mm2"] * (1 + pct / 100)
-        changed[f"{side}_mean_area_mm2"] = max(row[f"{side}_mean_area_mm2"], changed[f"{side}_min_area_mm2"])
-        source, before = self._patient_predict(row)
-        _, after = self._patient_predict(changed)
+        procedures = args.get("procedures")
+        if not isinstance(procedures, list) or not procedures:
+            raise ToolError(f"procedures must be a non-empty list from {list(PATIENT_PROCEDURES)}")
+        unknown = [p for p in procedures if p not in PATIENT_PROCEDURES]
+        if unknown:
+            raise ToolError(f"unknown procedures {unknown}; choose from {list(PATIENT_PROCEDURES)}")
+        plan = tuple(p for p in PATIENT_PROCEDURES if p in procedures)
+        recs = self._openfoam(row["patient"], [(), plan])
+        before, after = recs[()], recs[plan]
         out = {
-            "source": source, "patient_id": row["patient"],
-            "label": f"{side} narrowest cross-section {'widened' if pct >= 0 else 'narrowed'} by {abs(pct):g}%",
+            "source": f"OpenFOAM on the virtually operated CT airway, {after['source']}", "patient_id": row["patient"],
+            "label": plan_name(plan),
             "total_resistance_before": round(before["total_resistance"], 4),
             "total_resistance_after": round(after["total_resistance"], 4),
             "total_change_pct": round(100 * (after["total_resistance"] / before["total_resistance"] - 1), 1),
@@ -165,29 +161,30 @@ class Tools:
         return out
 
     def patient_surgery_options(self, args: dict) -> dict:
+        from .decision import patient as ps
+        from .patient_flow import plus_plus_from_totals
+
         row = self._patient_row(args)
         pid = row["patient"]
-        if self.patient_surrogate is None:
-            raise ToolError("no trained patient surrogate; run nasal-surrogate --patients first")
-        files = sorted(Path(self.labels_dir).glob(f"{pid}_*seg.nrrd")) if self.labels_dir else []
-        if not files:
-            raise ToolError("virtual surgery needs the patient's CT labels, which are not loaded")
-        out = dict(surgery_options(pid, str(files[0]), self.patient_surrogate))
-        out.update(_technique_notes(row if not np.isnan(row.get("total_resistance", np.nan))
-                                    else self.patient_surrogate.predict(row), out["recommended_plan"]))
-        if self.surgery is not None:
-            runs = self.surgery[self.surgery.patient == pid]
-            cfd = dict(zip(runs.plan, runs.total_resistance))
-            if "none" in cfd and len(cfd) > 1:
-                drops = {plan_name(p): round(100 * (1 - r / cfd["none"]), 1) for p, r in cfd.items() if p != "none"}
-                best = max(drops, key=drops.get)
-                check = {"source": "OpenFOAM on each operated airway", "best_plan": best, "best_drop_pct": drops[best]}
-                for key in ("recommended", "look_at_scan"):
-                    plan = out[f"{key}_plan"]
-                    if plan in drops:
-                        check[f"{key}_plan_drop_pct"] = drops[plan]
-                        check[f"{key}_plan_result"] = _drop_text(plan, drops[plan], "in OpenFOAM")
-                out["openfoam_check"] = check
+        recs = self._openfoam(pid, [(), *ps.candidate_plans()])
+        totals = {plan: r["total_resistance"] for plan, r in recs.items()}
+        drop = {plan: round(100 * (1 - r / totals[()]), 1) for plan, r in totals.items()}
+        recommended = plus_plus_from_totals(totals)
+        standard = ps.standard_rule_patient(recs[()])
+        best = max((p for p in totals if p), key=lambda p: drop[p])
+        out = {
+            "source": "OpenFOAM on the CT airway after each virtual surgery"
+                      + ("; some plans run now" if any("run now" in r["source"] for r in recs.values()) else ""),
+            "patient_id": pid,
+            "plans_compared": len(totals) - 1,
+            "recommended_plan": plan_name(recommended), "recommended_drop_pct": drop[recommended],
+            "recommended_result": _drop_text(plan_name(recommended), drop[recommended], "in OpenFOAM"),
+            "look_at_scan_plan": plan_name(standard), "look_at_scan_drop_pct": drop[standard],
+            "look_at_scan_result": _drop_text(plan_name(standard), drop[standard], "in OpenFOAM"),
+            "best_plan": plan_name(best), "best_drop_pct": drop[best],
+            "method": "smallest plan within 90% of the best OpenFOAM drop",
+        }
+        out.update(_technique_notes(recs[()], out["recommended_plan"]))
         self.results["surgery"] = out
         return out
 
@@ -273,17 +270,10 @@ class Tools:
         pred, form = self.results.get("prediction"), self.results.get("formula")
         if self.case is None and self.patient is None:
             flags.append({"id": "no_case", "severity": "error", "text": "No valid case or patient was set."})
-        cfd = self.results.get("openfoam")
-        if pred and cfd:
-            diff = 100 * abs(pred["total_resistance"] / cfd["total_resistance"] - 1)
-            if diff > DISAGREEMENT_FLAG_PCT:
-                flags.append({"id": "surrogate_vs_openfoam", "severity": "warning",
-                              "text": f"Surrogate and this patient's OpenFOAM run differ by {diff:.0f}%."})
-        if self.patient is not None and self.patient_surrogate is not None:
-            z = self.patient_surrogate.zscores(self.patient_surrogate.side_features(self.patient))
-            if np.abs(z).max() > EXTRAPOLATION_SD:
-                flags.append({"id": "unusual_anatomy", "severity": "warning",
-                              "text": "This airway is far outside the training patients, so the surrogate is extrapolating."})
+        if self.patient is not None and any("run now" in str(r.get("source", "")) for r in
+                                            [pred or {}, self.results.get("surgery") or {}, *self.results.get("what_if", [])]):
+            flags.append({"id": "fast_openfoam_run", "severity": "info",
+                          "text": "Some results come from OpenFOAM runs made now with fewer iterations than the stored runs."})
         if pred is None:
             flags.append({"id": "no_prediction", "severity": "error", "text": "No resistance prediction was run."})
         if pred and form:
@@ -335,20 +325,20 @@ SCHEMAS = {
         "required": ["patient_id"]}),
     "patient_resistance": _tool(
         "patient_resistance",
-        "Predicted nasal resistance per side and region for a real patient, plus their OpenFOAM result if available.",
+        "This real patient's nasal resistance per side and region from OpenFOAM on their CT airway (Pa*s/cm^3).",
         {"type": "object", "properties": {"patient_id": {"type": "string"}}, "required": ["patient_id"]}),
     "patient_what_if": _tool(
         "patient_what_if",
-        "Predicted resistance if one side's narrowest cross-section were widened or narrowed by a percentage.",
+        "OpenFOAM resistance before and after one virtual surgery plan on the patient's CT airway.",
         {"type": "object", "properties": {
             "patient_id": {"type": "string"},
-            "side": {"type": "string", "enum": ["left", "right"]},
-            "narrowest_area_change_pct": {"type": "number", "minimum": -50, "maximum": 100}},
-         "required": ["patient_id", "side", "narrowest_area_change_pct"]}),
+            "procedures": {"type": "array", "minItems": 1,
+                           "items": {"type": "string", "enum": list(PATIENT_PROCEDURES)}}},
+         "required": ["patient_id", "procedures"]}),
     "patient_surgery_options": _tool(
         "patient_surgery_options",
         "Virtual surgery on the patient's CT airway: turbinate reduction, valve repair, septoplasty and their "
-        "combinations, each scored for resistance drop; returns the recommended plan and the look-at-the-scan plan.",
+        "combinations, each run in OpenFOAM; returns the recommended plan, the best plan and the look-at-the-scan plan.",
         {"type": "object", "properties": {"patient_id": {"type": "string"}}, "required": ["patient_id"]}),
     "recommend_surgery": _tool(
         "recommend_surgery",
@@ -383,9 +373,10 @@ PROMPTS = {
     ),
     "planner_patient": (
         "You are the Planner. A real patient has been selected. Always call patient_resistance for that patient. "
-        "If the user asks about widening or narrowing one side, call patient_what_if with the side and the "
-        "percentage change of its narrowest cross-section. If the user asks about surgery, treatment or what to do, "
-        "call patient_surgery_options once. Never state numbers yourself. When done, call finish."
+        "If the user asks what a specific procedure would do (turbinate reduction, valve repair, septoplasty, or "
+        "widening the nasal valve, which is valve repair), call patient_what_if with those procedures. If the user "
+        "asks which surgery or treatment to do, call patient_surgery_options once. Never state numbers yourself. "
+        "When done, call finish."
     ),
     "planner": (
         "You are the Planner. A case has been set. Decide which tools answer the user's request. Always call "
@@ -410,11 +401,8 @@ PROMPTS = {
 # instructions that don't apply.
 EXPLAINER_PARTS = {
     "what_if": "For each what-if, say what changed and give the resistance before, after, and the percent change.",
-    "openfoam": "The openfoam total is this patient's simulation result; the prediction is a fast surrogate "
-                "estimate of their current resistance.",
-    "surgery": "Lead with the recommended surgery: copy the recommended_result sentence, then the "
-               "recommended_plan_result and best_plan from openfoam_check if present, then compare with the "
-               "look_at_scan_result sentence. Keep the words lower and higher exactly as written. Give the why "
+    "surgery": "Lead with the recommended surgery: copy the recommended_result sentence, name the best_plan, "
+               "then compare with the look_at_scan_result sentence. Keep the words lower and higher exactly as written. Give the why "
                "reasons, and the dominant_region_note if present. End by saying a surgeon makes the final decision.",
 }
 
@@ -534,8 +522,6 @@ def unsupported_numbers(text: str, facts: dict) -> list[str]:
 def missing_numbers(text: str, facts: dict) -> list[str]:
     """Key results the summary must quote: the total prediction and each what-if's after value."""
     required = [facts["prediction"]["total_resistance"]] + [w["total_resistance_after"] for w in facts.get("what_if", [])]
-    if "openfoam" in facts:
-        required.append(facts["openfoam"]["total_resistance"])
     if "surgery" in facts:
         required.append(facts["surgery"]["recommended_drop_pct"])
     found = [float(t) for t in NUMBER.findall(text)]
@@ -545,10 +531,8 @@ def missing_numbers(text: str, facts: dict) -> list[str]:
 def template_summary(facts: dict) -> str:
     """Code-written fallback when the Explainer's text fails the number check."""
     p = facts["prediction"]
-    lines = [f"Predicted total nasal resistance is {p['total_resistance']} Pa*s/cm^3 "
+    lines = [f"Total nasal resistance is {p['total_resistance']} Pa*s/cm^3 "
              f"(left {p['left_resistance']}, right {p['right_resistance']}), from the {p['source']}."]
-    if "openfoam" in facts:
-        lines.append(f"This patient's OpenFOAM simulation gives {facts['openfoam']['total_resistance']} Pa*s/cm^3.")
     for w in facts.get("what_if", []):
         lines.append(f"With the change '{w['label']}', total resistance goes from {w['total_resistance_before']} "
                      f"to {w['total_resistance_after']} ({w['total_change_pct']}%).")
@@ -560,9 +544,8 @@ def template_summary(facts: dict) -> str:
             lines.append(f"Most resistance: {s['dominant_region']}.")
         if s.get("dominant_region_note"):
             lines.append(f"Note: {s['dominant_region_note']}.")
-        check = s.get("openfoam_check")
-        if check and check.get("recommended_plan_result"):
-            lines.append(f"OpenFOAM check: {check['recommended_plan_result']}; best plan: {check['best_plan']}.")
+        if s.get("best_plan"):
+            lines.append(f"Best plan in OpenFOAM: {s['best_plan']}.")
     for f in facts.get("flags", []):
         lines.append(f["text"])
     return " ".join(lines)
@@ -572,39 +555,6 @@ def plan_name(plan) -> str:
     """'turbinate_reduction+valve_repair' or a tuple of procedures -> 'turbinate reduction + valve repair'."""
     parts = plan.split("+") if isinstance(plan, str) else list(plan)
     return " + ".join(p.replace("_", " ") for p in parts if p and p != "none") or "no surgery"
-
-
-_SURGERY_CACHE: dict = {}
-
-
-def surgery_options(pid: str, label_path: str, surrogate) -> dict:
-    """Every procedure plan on the patient's voxel airway, scored by the patient surrogate (a few seconds,
-    then cached)."""
-    key = (pid, label_path, id(surrogate))
-    if key not in _SURGERY_CACHE:
-        _SURGERY_CACHE[key] = _surgery_options(pid, label_path, surrogate)
-    return _SURGERY_CACHE[key]
-
-
-def _surgery_options(pid: str, label_path: str, surrogate) -> dict:
-    from . import anatomy
-    from .decision import patient as ps
-
-    labels, spacing, _ = anatomy.load_labels(Path(label_path))
-    tags, cuts = anatomy.airway(labels)
-    recommended, predicted = ps.plus_plus_rule_patient(tags, cuts, spacing, ps.surrogate_evaluator(surrogate, spacing))
-    standard = ps.standard_rule_patient(anatomy.measure(tags, spacing))
-    before = predicted[()]
-    drop = {plan: round(100 * (1 - r / before), 1) for plan, r in predicted.items()}
-    return {
-        "source": "patient surrogate on the virtually operated CT airway", "patient_id": pid,
-        "plans_compared": len(predicted) - 1,
-        "recommended_plan": plan_name(recommended), "recommended_drop_pct": drop[recommended],
-        "recommended_result": _drop_text(plan_name(recommended), drop[recommended], "predicted"),
-        "look_at_scan_plan": plan_name(standard), "look_at_scan_drop_pct": drop[standard],
-        "look_at_scan_result": _drop_text(plan_name(standard), drop[standard], "predicted"),
-        "method": "smallest plan within 90% of the best predicted drop",
-    }
 
 
 def _technique_notes(record: dict, plan: str) -> dict:
@@ -658,6 +608,13 @@ def load_surgery(path: Path = SURGERY_PATH):
     return pd.read_csv(path)
 
 
+def load_patient_table(sim_path: Path = PATIENTS_PATH):
+    """NasalSeg patient table (geometry and stored OpenFOAM results), or None when missing."""
+    import pandas as pd
+
+    return pd.read_csv(sim_path) if Path(sim_path).exists() else None
+
+
 def load_patients(sim_path: Path = PATIENTS_PATH, model_path: Path = PATIENT_SURROGATE_PATH):
     """NasalSeg patient table and trained patient surrogate, or (None, None) when missing."""
     if not Path(sim_path).exists() or not Path(model_path).exists():
@@ -677,11 +634,13 @@ def with_history(request: str, history: list[dict] | None, keep: int = 4) -> str
 
 
 def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogate=None,
-                 thinking: bool = False, patients=None, patient_surrogate=None,
-                 listener: Callable[[dict], None] | None = None, labels_dir: Path | None = None,
-                 surgery=None, provider: str = "local", history: list[dict] | None = None) -> dict:
+                 thinking: bool = False, patients=None, listener: Callable[[dict], None] | None = None,
+                 labels_dir: Path | None = None, surgery=None, patient_flow=None, provider: str = "local",
+                 history: list[dict] | None = None) -> dict:
     """Case -> Planner -> Critic -> Explainer. Returns the facts, the summary and the full agent log.
-    With `patients` (and their surrogate) the Case agent may pick a real NasalSeg patient.
+    With `patients` the Case agent may pick a real NasalSeg patient; that patient's resistance, what-ifs and
+    surgery options come from OpenFOAM through `patient_flow` (by default the stored runs in `patients` and
+    `surgery`, with `labels_dir` for the airways; no live runs).
 
     provider "local" uses the vLLM endpoint (NASAL_LLM_URL); "openai" uses OpenAI's API (OPENAI_API_KEY,
     NASAL_OPENAI_MODEL) with store=False. `history` holds earlier {"question", "answer"} turns of this
@@ -704,8 +663,10 @@ def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogat
             from openai import OpenAI
             client = OpenAI(base_url=DEFAULT_URL, api_key=os.environ.get("NASAL_LLM_KEY", "none"))
         extra = {"chat_template_kwargs": {"enable_thinking": thinking}}
-    tools = Tools(surrogate=surrogate, patients=patients, patient_surrogate=patient_surrogate,
-                  labels_dir=labels_dir, surgery=surgery)
+    if patient_flow is None and patients is not None:
+        from .patient_flow import PatientFlow
+        patient_flow = PatientFlow(patients, surgery, labels_dir)
+    tools = Tools(surrogate=surrogate, patients=patients, flow=patient_flow)
     log = AgentLog(listener=listener)
     start = time.time()
 
@@ -723,7 +684,14 @@ def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogat
                   max_turns=PLANNER_MAX_TURNS, stop_at_limit=True)
         if "prediction" not in tools.results:
             log.add("planner", "fallback", reason="planner skipped patient_resistance")
-            tools.patient_resistance({"patient_id": pid})
+            try:
+                tools.patient_resistance({"patient_id": pid})
+            except ToolError as err:  # no OpenFOAM result and no live runs: say so instead of guessing
+                flag = {"id": "no_openfoam", "severity": "error", "text": str(err)}
+                return {"request": request, "model": model_info, "facts": {"case": {"patient_id": pid}, "flags": [flag]},
+                        "summary": f"No OpenFOAM result is available for patient {pid}: {err}.",
+                        "summary_source": "code (no OpenFOAM result)", "seconds": round(time.time() - start, 2),
+                        "log": log.steps}
         case_facts = {"patient_id": pid}
     else:
         case_json = json.dumps(asdict(tools.case))
