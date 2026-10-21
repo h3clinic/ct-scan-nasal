@@ -277,13 +277,13 @@ def write_patient_case(case_dir: Path, label_path: Path, processes: int = 4, tur
 
 
 def write_airway_case(case_dir: Path, tags: np.ndarray, spacing: np.ndarray, origin: np.ndarray, cuts: dict,
-                      processes: int = 4, turbulence: str = "kOmegaSST") -> dict:
+                      processes: int = 4, turbulence: str = "kOmegaSST", max_iterations: int = MAX_ITERATIONS) -> dict:
     """Write a complete OpenFOAM case for an airway tag volume (for example after
     virtual surgery); returns its geometry record."""
     mesh = voxel_mesh(tags, spacing, origin, cuts)
     if case_dir.exists():
         shutil.rmtree(case_dir)
-    for rel, text in case_files(processes, turbulence, inlets=tuple(INLETS.values()), sample_planes=False,
+    for rel, text in case_files(processes, turbulence, max_iterations, inlets=tuple(INLETS.values()), sample_planes=False,
                                 mesh_commands=[], write_format="ascii", reconstruct=processes > 1).items():
         path = case_dir / rel
         path.parent.mkdir(parents=True, exist_ok=True)

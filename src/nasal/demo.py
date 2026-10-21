@@ -26,10 +26,15 @@ DEFAULT_QUESTION = "Which side is harder to breathe through, and what if the nar
 @lru_cache(maxsize=16)
 def airway_surface(label_path: str, step: int = 1) -> dict:
     """Airway surface (mm) and each vertex's '<side>_<region>' name for one patient."""
-    from skimage import measure
-
     labels, spacing, origin = anatomy.load_labels(Path(label_path))
     tags, _ = anatomy.airway(labels)
+    return tags_surface(tags, spacing, origin, step)
+
+
+def tags_surface(tags: np.ndarray, spacing: np.ndarray, origin: np.ndarray, step: int = 1) -> dict:
+    """Surface (mm) of a cut airway tag volume, with each vertex's '<side>_<region>' name."""
+    from skimage import measure
+
     names = anatomy.region_names(tags)
     padded = np.pad(tags > 0, 1).astype(np.float32)
     verts, faces, _, _ = measure.marching_cubes(padded, 0.5, step_size=step)
@@ -121,6 +126,45 @@ def describe_step(step: dict) -> str | None:
     return None
 
 
+def ask_agents(pid, question, patients, surrogate, labels_dir, surgery, provider: str = "local",
+               history: list[dict] | None = None):
+    """Run the four agents on one patient, yielding (steps markdown, answer markdown) as they go.
+    With `history` (this session's earlier turns), the new turn is appended to it on success."""
+    steps, q = [], queue.Queue()
+    result = {}
+
+    def work():
+        try:
+            result["out"] = agents.run_pipeline(f"Patient {pid}. {question}", patients=patients,
+                                                patient_surrogate=surrogate, listener=q.put,
+                                                labels_dir=Path(labels_dir), surgery=surgery,
+                                                provider=provider, history=history)
+        except Exception as err:  # shown in the UI instead of crashing the app
+            result["error"] = f"{type(err).__name__}: {err}"
+        q.put(None)
+
+    threading.Thread(target=work, daemon=True).start()
+    yield "_Running…_", ""
+    while True:
+        step = q.get()
+        if step is None:
+            break
+        line = describe_step(step)
+        if line:
+            steps.append(line)
+            yield "\n".join(steps), ""
+    if "error" in result:
+        where = "OpenAI API" if provider == "openai" else agents.DEFAULT_URL
+        yield "\n".join(steps), f"**Agents failed:** {result['error']} ({where})"
+        return
+    out = result["out"]
+    if history is not None:
+        history.append({"question": f"Patient {pid}. {question}", "answer": out["summary"]})
+    flags = "".join(f"\n- {f['text']}" for f in out["facts"]["flags"])
+    yield ("\n".join(steps) + f"\n\n_{out['seconds']} s · {out['summary_source']}_",
+           f"{as_markdown(out['summary'])}\n\n**Flags**{as_markdown(flags)}")
+
+
 def build_app(labels_dir: Path, sim_path: Path = agents.PATIENTS_PATH, model_path: Path = agents.PATIENT_SURROGATE_PATH):
     import gradio as gr
 
@@ -154,35 +198,7 @@ def build_app(labels_dir: Path, sim_path: Path = agents.PATIENTS_PATH, model_pat
         return fig, comparison_table(row, base), info
 
     def ask(pid, question):
-        steps, q = [], queue.Queue()
-        result = {}
-
-        def work():
-            try:
-                result["out"] = agents.run_pipeline(f"Patient {pid}. {question}", patients=patients,
-                                                    patient_surrogate=surrogate, listener=q.put,
-                                                    labels_dir=Path(labels_dir), surgery=surgery)
-            except Exception as err:  # shown in the UI instead of crashing the app
-                result["error"] = f"{type(err).__name__}: {err}"
-            q.put(None)
-
-        threading.Thread(target=work, daemon=True).start()
-        yield "_Running…_", ""
-        while True:
-            step = q.get()
-            if step is None:
-                break
-            line = describe_step(step)
-            if line:
-                steps.append(line)
-                yield "\n".join(steps), ""
-        if "error" in result:
-            yield "\n".join(steps), f"**Agents failed:** {result['error']} ({agents.DEFAULT_URL})"
-            return
-        out = result["out"]
-        flags = "".join(f"\n- {f['text']}" for f in out["facts"]["flags"])
-        yield ("\n".join(steps) + f"\n\n_{out['seconds']} s · {out['summary_source']}_",
-               f"{as_markdown(out['summary'])}\n\n**Flags**{as_markdown(flags)}")
+        yield from ask_agents(pid, question, patients, surrogate, labels_dir, surgery)
 
     with gr.Blocks(title="Nasal0") as app:
         gr.Markdown("# Nasal0")

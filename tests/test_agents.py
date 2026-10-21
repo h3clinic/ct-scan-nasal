@@ -192,3 +192,25 @@ def test_recommend_surgery_uses_the_final_stage_recommender():
     text = agents.template_summary({"prediction": {**tools.predict_resistance(CASE)}, "surgery": out})
     assert "Why:" in text and agents.missing_numbers(text, {"prediction": tools.results["prediction"],
                                                              "surgery": out}) == []
+
+
+def test_openai_provider_sends_store_false_and_no_vllm_options():
+    expected = round(evaluate(CaseParams(**CASE))["total_resistance"], 4)
+    after = round(evaluate(CaseParams(15.0, 1.0, 0.5))["total_resistance"], 4)
+    client = ScriptedClient(happy_script([f"Total resistance is {expected} Pa*s/cm^3, or {after} with a wider valve."]))
+    out = agents.run_pipeline("narrow valve", client=client, provider="openai")
+    assert all(r["store"] is False and "extra_body" not in r for r in client.requests)
+    assert {r["model"] for r in client.requests} == {agents.OPENAI_MODEL}
+    assert out["model"]["name"] == agents.OPENAI_MODEL
+    local = ScriptedClient(happy_script([f"Total resistance is {expected} Pa*s/cm^3, or {after} with a wider valve."]))
+    agents.run_pipeline("narrow valve", client=local)
+    assert all("store" not in r and "extra_body" in r for r in local.requests)
+    with pytest.raises(ValueError):
+        agents.run_pipeline("narrow valve", client=local, provider="cloud")
+
+
+def test_session_history_is_sent_as_context():
+    assert agents.with_history("next?", None) == "next?"
+    text = agents.with_history("and septoplasty?", [{"question": f"q{i}", "answer": f"a{i}"} for i in range(6)])
+    assert text.endswith("New request: and septoplasty?")
+    assert "q2" in text and "q5" in text and "q1" not in text  # only the last four turns

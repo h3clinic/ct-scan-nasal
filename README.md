@@ -48,6 +48,7 @@ The agent count stays at four: more agents mostly add latency and failure points
 | Decision rules (standard and improved) | Plain Python functions | **Prototype**: `nasal.decision` (tubes) and `nasal.decision.patient` (real airways, verified in OpenFOAM); thresholds are placeholders pending ENT review |
 | Comparison and logging | pandas + JSON agent log | **Done**: `nasal-agents --log` |
 | Demo | Gradio + Plotly | **Done**: `nasal.demo`, `nasal-demo` |
+| Studio (CT to surgery in one app) | Gradio + Plotly, OpenFOAM in Docker | **First version**: `nasal.studio`, `nasal-studio`; see Studio |
 | Model serving | vLLM `v0.27.1` on NVIDIA Brev (1x H100), OpenAI-style endpoint | **Done**: see Agents usage |
 
 ## Workflow
@@ -262,6 +263,20 @@ The demo opens at http://127.0.0.1:7860.
 - **What-if:** sliders widen or narrow each side's narrowest section and recolor instantly through the surrogate.
 - **Table:** OpenFOAM against the surrogate for every region, with the surrogate's error and its measured prediction time.
 - **Agents:** "Run agents" sends a question to the four agents and lists each step as it happens: tool calls, errors sent back, the code number check. Then it shows the summary and flags. The agents need the vLLM endpoint (see Agents); everything else works offline.
+
+### Studio
+
+```bash
+nasal-studio --images nasalseg/images --labels nasalseg/labels    # opens at http://127.0.0.1:7861
+```
+
+One window, laid out like the [VOCO](https://github.com/h3clinic/VOCO) desktop app: patients on the left, the airway in the middle, commands on the right and the agents as the console below.
+
+- **CT to airway:** pick a NasalSeg CT, or upload a CT volume (.nrrd, HU). The airway comes from the expert labels or from automatic segmentation (needs `data/segment_model.joblib` from `nasal-segment train`).
+- **Airflow:** every resistance shown comes from OpenFOAM: the stored run where one exists, otherwise **Run airflow** starts one in Docker. The patient surrogate is not used here, because on some airways it is off by more than 30% (P022: 0.141 against OpenFOAM's 0.263 Pa·s/cm³).
+- **Virtual surgery:** tick turbinate reduction, valve repair or septoplasty, see the voxels each one adds, then run OpenFOAM on the plan or on all 7 plans. The table ranks the plans by OpenFOAM's resistance drop and marks the standard rule's pick.
+- **Faster local runs:** app runs stop at 900 iterations instead of 3000 and use up to 8 cores each, two cases at a time on a 20-core machine (`--procs`, `--iterations`). In the 13 stored 3000-iteration patient runs, total flow at iteration 600 was already within 0.11% of the final value, and P022 run this way matched its stored run within 0.22% in every region in 237 s.
+- **Agents:** the console sends a question to the four agents. **Local Nemotron** uses the vLLM endpoint as above. **OpenAI API** uses `OPENAI_API_KEY` and `NASAL_OPENAI_MODEL` (default `gpt-4.1-mini`) with `store=False`. Earlier questions are kept as context only in the app's memory for that browser session, and **Clear** forgets them. Only the patient id, the question and computed numbers are sent, never the CT. Under OpenAI's API policy that data is not used for training, but it may be kept up to 30 days for abuse monitoring unless the organization has zero data retention. OpenAI does not publish its models' sizes, so this backend is outside the project's 33B limit; Nemotron stays the default.
 
 ### Agents
 
