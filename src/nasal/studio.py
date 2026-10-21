@@ -384,8 +384,8 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         model_name = prefs.get("openai_model") or agents.OPENAI_MODEL
         steps = {"role": "system", "text": "Running…", "meta": model_name}
         history = memory if prefs.get("remember_questions", True) else None
-        for steps_md, answer_md in demo.ask_agents(pid, question, patients, flow, provider="openai", history=history,
-                                                   api_key=key, openai_model=model_name):
+        for steps_md, answer_md in demo.ask_agents(pid, question, patients, flow, history=history,
+                                                   api_key=key, model=model_name):
             steps["text"] = " · ".join(line.strip("-_ ").replace("**", "").replace("`", "")
                                        for line in steps_md.splitlines() if line.strip()) or "Running…"
             shown = [*log, steps] + ([{"role": "agents", "text": answer_md, "meta": "agents"}] if answer_md else [])

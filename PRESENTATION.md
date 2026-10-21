@@ -4,12 +4,11 @@ Everything for a live presentation: setup, the word-for-word script with clicks,
 
 ## 30 minutes before
 
-1. **Network:** connect to your phone hotspot, not school Wi-Fi (it blocks NVIDIA and Brev). Check with `curl -s https://api.ngc.nvidia.com` (any reply means it isn't blocked).
-2. **GPU:** `brev ls` must show `nemotron-vllm` RUNNING. If it is stopped, run `brev start nemotron-vllm` and allow 15 minutes for the model to load.
-3. **Tunnel:** keep the "vLLM tunnel (auto-reconnect)" terminal tab open. `curl -s localhost:8000/v1/models` must print a model list.
-4. **Demo:** run `nasal-demo --labels <labels> --sim data/patient_sim.csv --model data/patient_surrogate.json` and open http://127.0.0.1:7860. It should open on P022.
-5. **Warm-up:** click **Run agents** once, then reload the page so it starts clean.
-6. **Tabs:** the demo, the Nasal0 gallery (scrolled to the video, as backup) and the repo README. Close everything else, mute notifications, and set the browser zoom to 125% so the room can read it.
+1. **Network:** connect to your phone hotspot if the venue's Wi-Fi blocks APIs. Check with `curl -s https://api.openai.com/v1/models` (any reply means it isn't blocked).
+2. **OpenAI:** set `OPENAI_API_KEY` (or paste the key in the studio's Settings) and make sure the account has credits; with none, every agent request fails.
+3. **Demo:** run `nasal-demo --labels <labels> --sim data/patient_sim.csv --model data/patient_surrogate.json` and open http://127.0.0.1:7860. It should open on P022.
+4. **Warm-up:** click **Run agents** once, then reload the page so it starts clean.
+5. **Tabs:** the demo, the Nasal0 gallery (scrolled to the video, as backup) and the repo README. Close everything else, mute notifications, and set the browser zoom to 125% so the room can read it.
 
 ## Script (about 4 minutes)
 
@@ -37,15 +36,15 @@ Everything for a live presentation: setup, the word-for-word script with clicks,
 
 **[Set it back to 0. Click "Run agents"] (1:40)**
 
-> "Now ask in plain language. Four agents, all one small model: NVIDIA Nemotron 3.5 Lightning, 30 billion parameters with 3 billion active, served with vLLM on an NVIDIA Brev H100.
+> "Now ask in plain language. Four agents, all one OpenAI model, each with its own job and its own tools.
 >
 > Watch the steps stream in. The Case agent picks the patient. The Planner calls the physics tools. The Critic checks the results. The Explainer writes the answer.
 >
 > The models only choose tools. Every number comes from code, and code checks every number the Explainer writes. If one doesn't match, code writes the answer instead."
 
-**[Answer appears, about 6 s] (2:20)**
+**[Answer appears] (2:20)**
 
-> "Six seconds. And the Critic caught that the fast model and the simulation disagree for this patient, so you know when not to trust the shortcut."
+> "And every resistance in that answer comes from this patient's own OpenFOAM simulation, not from the fast model."
 
 **[Gallery: Virtual surgery section, or describe it] (2:40)**
 
@@ -55,17 +54,17 @@ Everything for a live presentation: setup, the word-for-word script with clicks,
 
 **[Gallery: Agents section] (3:20)**
 
-> "And the tool calling holds up. On 16 test requests, including deliberately broken ones like an unknown patient or an impossible valve angle, all 16 ran. Code caught all 3 bad tool calls, and the model recovered."
+> "And the tool calling is checked by code. Arguments are validated against the parameter ranges, bad calls go back to the model to fix, and an unknown patient gets an error, not a guess."
 
 **[Close] (3:40)**
 
-> "Real anatomy, real airflow simulation, a sub-millisecond surrogate and small models that call tools reliably. That's Nasal0. Next step: a surgeon reviews the rules."
+> "Real anatomy, real airflow simulation, a sub-millisecond surrogate and agents whose numbers code checks. That's Nasal0. Next step: a surgeon reviews the rules."
 
 ## If something breaks
 
 - **Agents fail or hang:** keep going with the map, sliders and table; they work without the model. Then play the agent part of the video in the gallery (from 1:05).
 - **Demo won't start:** play the gallery video from the start and narrate the same script over it.
-- **The tunnel drops:** it reconnects by itself within a few seconds; click **Run agents** again.
+- **OpenAI refuses (no credits, bad key):** the console says why in plain words; fix it in Settings, or carry on without the agents.
 - **No internet at all:** the demo still runs locally except the agents. Use the video for that part.
 
 ## Likely questions
@@ -83,19 +82,22 @@ A simulation takes minutes on many cores. The surrogate takes well under a milli
 On real airways it averages a 16% error per side, against 30% for simply guessing the average patient. Its estimates of how much a surgery plan helps are rough (correlation 0.51 with OpenFOAM), which is why plans were scored in OpenFOAM.
 
 **Why one model for four agents?**
-Four roles with separate tools and checks, on one small model, keep it fast and cheap: a whole run takes about 6 seconds. More agents mostly add latency and failure points.
+Four roles with separate tools and checks, on one model, keep it simple and cheap. More agents mostly add latency and failure points.
 
 **What stops the model from making up numbers?**
 Code computes every number. The Explainer's text is checked number by number against the tool results. If a number doesn't match, it gets one retry, and then code writes the answer instead. The Critic can only cite flags that the code checks produced.
 
 **Did you fine-tune anything?**
-No. We used Nemotron 3.5 Lightning as released, with its native tool calling.
+No. The agents use an OpenAI model as offered, with its standard tool calling.
 
 **Septoplasty made things worse?**
 In our model, yes, but that's an artifact: our voxel version of septoplasty removes more airway than it adds. It's not a finding about real septoplasty.
 
-**Where are NVIDIA and Red Hat used?**
-Nemotron 3.5 Lightning runs all the agents. vLLM serves it on a Brev H100. Brev CPU instances ran the OpenFOAM simulations. We also tried NVIDIA's NV-Generate-CT model for synthetic CT.
+**Where is NVIDIA used?**
+NVIDIA Brev CPU instances ran the OpenFOAM simulations. We also tried NVIDIA's NV-Generate-CT model for synthetic CT. The agents run on OpenAI's API.
+
+**Does patient data go to OpenAI?**
+Only the patient's dataset id, the question and computed numbers, never a CT. Requests use store=False; OpenAI may keep API data up to 30 days for abuse monitoring unless the organization has zero data retention.
 
 **What's next?**
 A surgeon reviewing the decision rules, smoother airway walls, and more patients.
@@ -108,5 +110,4 @@ A surgeon reviewing the decision rules, smoother airway walls, and more patients
 | Median nasal resistance | 0.146 Pa·s/cm³ at 150 Pa |
 | Surrogate | 16% side error vs 30% baseline; under 1 ms |
 | Virtual surgery | map-driven plan matched best 10/10; look-at-the-scan rule 1/10; 80 simulations |
-| Agents | 16/16 runs, 15/16 correct case, 3/98 bad calls caught; ~6 s per run |
-| Model | Nemotron 3.5 Lightning, 30B total / 3B active, vLLM on a Brev H100 |
+| Agents | four roles on one OpenAI model (`gpt-4.1-mini` by default); reliability not yet measured on OpenAI |

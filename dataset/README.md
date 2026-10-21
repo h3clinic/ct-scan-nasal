@@ -25,7 +25,7 @@ configs:
 
 # Nasal0 airflow simulations
 
-Simulated nasal airflow from [Nasal0](https://github.com/h3clinic/ct-scan-nasal): OpenFOAM results on real CT nasal airways and on idealized airways, virtual surgery runs, the surrogate models fitted to them, and the agent evaluation.
+Simulated nasal airflow from [Nasal0](https://github.com/h3clinic/ct-scan-nasal): OpenFOAM results on real CT nasal airways and on idealized airways, virtual surgery runs and the surrogate models fitted to them.
 
 Everything here is simulation output. No CT images or labels are included.
 
@@ -40,8 +40,6 @@ Everything here is simulation output. No CT images or labels are included.
 | `models/patient_surrogate.json` | | Power-law surrogate for patient resistance from 6 geometry numbers per side |
 | `models/surrogate.pt` | | PyTorch surrogate for the idealized airways |
 | `models/*_report.json` | | Cross-validated surrogate accuracy |
-| `agents/agent_eval.json` | 16 | Tool-calling reliability probes for the Nemotron 3.5 Lightning agents |
-| `agents/agent_log_patient.json` | | One full agent run on patient P022 |
 | `segmentation/cv_threshold_sweep.csv` | 520 | CT-to-airway front end: per scan and air threshold (−150, −200, −300, −400 HU), held-out Dice against the expert labels, measured geometry and surrogate resistance of the expert and automatic airways |
 | `segmentation/cv_summary.json` | | Mean, median and worst Dice per threshold |
 

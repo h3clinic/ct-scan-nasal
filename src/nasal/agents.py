@@ -1,7 +1,7 @@
-"""Four small-model agents that call plain-code tools.
+"""Four agents that call plain-code tools.
 
-Every agent is the same served model (NVIDIA Nemotron 3.5 Lightning 30B-A3B by
-default) with its own instructions and its own tools:
+Every agent is the same OpenAI model (OPENAI_MODEL by default, called through
+OpenAI's API with store=False) with its own instructions and its own tools:
 
 - Case: turns a description into case parameters by calling `set_case`. Code
   validates the arguments against PARAM_SPECS and sends errors back to the model.
@@ -32,15 +32,12 @@ from .decision.patient import PATIENT_PROCEDURES
 from .params import PARAM_SPECS, REGIONS, SIDES, CaseParams
 from .resistance import REFERENCE_PRESSURE, evaluate
 
-DEFAULT_URL = os.environ.get("NASAL_LLM_URL", "http://localhost:8000/v1")
-DEFAULT_MODEL = os.environ.get("NASAL_LLM_MODEL", "nemotron")
-MODEL_INFO = {"name": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", "total_params": "30B", "active_params": "3B"}
-# Optional hosted backend: OpenAI's API with OPENAI_API_KEY. Requests are sent with store=False, so OpenAI
-# keeps no stored completion; under OpenAI's API policy, API data is not used for training by default but
-# may be retained for abuse monitoring (up to 30 days) unless the organization has zero data retention.
-# OpenAI does not publish its models' sizes, so this backend is outside the project's 33B limit.
+# The agents run on OpenAI's API (key from the studio's Settings or OPENAI_API_KEY). Requests are sent with
+# store=False, so OpenAI keeps no stored completion; under OpenAI's API policy, API data is not used for
+# training by default but may be retained for abuse monitoring (up to 30 days) unless the organization has
+# zero data retention. OpenAI does not publish its models' sizes.
 OPENAI_MODEL = os.environ.get("NASAL_OPENAI_MODEL", "gpt-4.1-mini")
-PROVIDERS = ("local", "openai")
+OPENAI_URL = "https://api.openai.com/v1"
 SURROGATE_PATH = Path("data/surrogate.pt")
 MAX_TURNS = 6
 PLANNER_MAX_TURNS = 10  # surgery questions ask for several what-ifs
@@ -425,7 +422,7 @@ class AgentLog:
 
 def run_agent(client, model: str, agent: str, system: str, user: str, tools: Tools, tool_names: list[str],
               log: AgentLog, final_tool: str | tuple[str, ...] | None = None, max_turns: int = MAX_TURNS,
-              extra_body: dict | None = None, stop_at_limit: bool = False, options: dict | None = None):
+              stop_at_limit: bool = False):
     """Chat loop: execute tool calls in code, send errors back, stop at final_tool.
     Returns the final tool's arguments, or the model's text if no final tool. With stop_at_limit,
     running out of turns keeps the tool results so far and returns None instead of raising."""
@@ -434,12 +431,9 @@ def run_agent(client, model: str, agent: str, system: str, user: str, tools: Too
     schemas = [SCHEMAS[n] for n in tool_names]
     for turn in range(max_turns):
         start = time.time()
-        kwargs = {"model": model, "messages": messages, "temperature": 0.2}
+        kwargs = {"model": model, "messages": messages, "temperature": 0.2, "store": False}
         if schemas:
             kwargs.update(tools=schemas, tool_choice="auto")
-        if extra_body:
-            kwargs["extra_body"] = extra_body
-        kwargs.update(options or {})
         reply = client.chat.completions.create(**kwargs).choices[0].message
         calls = reply.tool_calls or []
         log.add(agent, "model", turn=turn, seconds=round(time.time() - start, 2),
@@ -625,8 +619,12 @@ def load_patients(sim_path: Path = PATIENTS_PATH, model_path: Path = PATIENT_SUR
     return pd.read_csv(sim_path), PatientSurrogate.load(model_path)
 
 
-def explain_error(error: str, provider: str = "openai") -> str:
-    """A model-server error in words a user can act on; the raw error stays at the end for reference."""
+def model_info(model: str) -> dict:
+    return {"name": model, "provider": "OpenAI API (store=False)", "total_params": "not published by OpenAI"}
+
+
+def explain_error(error: str) -> str:
+    """An OpenAI error in words a user can act on; the raw error kind stays at the end for reference."""
     hints = [
         (("insufficient_quota", "credit_balance_exhausted"),
          "OpenAI says this account has no credits left. Add credits under Billing at platform.openai.com, then send again."),
@@ -634,12 +632,12 @@ def explain_error(error: str, provider: str = "openai") -> str:
          "OpenAI did not accept the API key. Check it in Settings."),
         (("model_not_found", "does not exist"), "OpenAI does not offer that model to this key. Change the model in Settings."),
         (("RateLimitError",), "OpenAI is limiting requests right now. Wait a moment and send again."),
-        (("APIConnectionError", "Connection error"), "Could not reach the model server. Check the internet connection."),
+        (("APIConnectionError", "Connection error"), "Could not reach OpenAI. Check the internet connection."),
     ]
     for needles, text in hints:
         if any(n in error for n in needles):
             return f"{text} ({error.split(':')[0]})"
-    return f"{error} ({'OpenAI API' if provider == 'openai' else DEFAULT_URL})"
+    return f"{error} (OpenAI API)"
 
 
 def with_history(request: str, history: list[dict] | None, keep: int = 4) -> str:
@@ -650,38 +648,26 @@ def with_history(request: str, history: list[dict] | None, keep: int = 4) -> str
     return "Earlier in this session:\n" + "\n\n".join(lines) + f"\n\nNew request: {request}"
 
 
-def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogate=None,
-                 thinking: bool = False, patients=None, listener: Callable[[dict], None] | None = None,
-                 labels_dir: Path | None = None, surgery=None, patient_flow=None, provider: str = "local",
-                 history: list[dict] | None = None, api_key: str | None = None, openai_model: str | None = None,
-                 local_url: str | None = None) -> dict:
+def run_pipeline(request: str, client=None, model: str | None = None, surrogate=None, patients=None,
+                 listener: Callable[[dict], None] | None = None, labels_dir: Path | None = None, surgery=None,
+                 patient_flow=None, history: list[dict] | None = None, api_key: str | None = None) -> dict:
     """Case -> Planner -> Critic -> Explainer. Returns the facts, the summary and the full agent log.
     With `patients` the Case agent may pick a real NasalSeg patient; that patient's resistance, what-ifs and
     surgery options come from OpenFOAM through `patient_flow` (by default the stored runs in `patients` and
     `surgery`, with `labels_dir` for the airways; no live runs).
 
-    provider "local" uses the vLLM endpoint (`local_url`, else NASAL_LLM_URL); "openai" uses OpenAI's API with
-    store=False, with `api_key` (else OPENAI_API_KEY) and `openai_model` (else NASAL_OPENAI_MODEL). `history` holds earlier {"question", "answer"} turns of this
-    session; it lives only in the caller's memory and is sent as context with the new request."""
-    if provider not in PROVIDERS:
-        raise ValueError(f"provider must be one of {PROVIDERS}")
+    The agents use OpenAI's API with store=False: `api_key` (else OPENAI_API_KEY) and `model` (else
+    OPENAI_MODEL). `history` holds earlier {"question", "answer"} turns of this session; it lives only in the
+    caller's memory and is sent as context with the new request."""
     request = with_history(request, history)
-    options, model_info = None, MODEL_INFO
-    if provider == "openai":
-        if client is None:
-            from openai import OpenAI
-            key = api_key or os.environ.get("OPENAI_API_KEY")
-            if not key:
-                raise RuntimeError("add an OpenAI API key in Settings, or set OPENAI_API_KEY")
-            client = OpenAI(api_key=key, base_url="https://api.openai.com/v1")  # never NASAL_LLM_URL
-        model = model if model != DEFAULT_MODEL else (openai_model or OPENAI_MODEL)
-        extra, options = None, {"store": False}
-        model_info = {"name": model, "provider": "OpenAI API (store=False)", "total_params": "not published"}
-    else:
-        if client is None:
-            from openai import OpenAI
-            client = OpenAI(base_url=local_url or DEFAULT_URL, api_key=os.environ.get("NASAL_LLM_KEY", "none"))
-        extra = {"chat_template_kwargs": {"enable_thinking": thinking}}
+    model = model or OPENAI_MODEL
+    if client is None:
+        from openai import OpenAI
+        key = api_key or os.environ.get("OPENAI_API_KEY")
+        if not key:
+            raise RuntimeError("add an OpenAI API key in Settings, or set OPENAI_API_KEY")
+        client = OpenAI(api_key=key, base_url=OPENAI_URL)
+    info = model_info(model)
     if patient_flow is None and patients is not None:
         from .patient_flow import PatientFlow
         patient_flow = PatientFlow(patients, surgery, labels_dir)
@@ -691,15 +677,14 @@ def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogat
 
     if patients is not None:
         run_agent(client, model, "case", PROMPTS["case_patient"], request, tools, ["set_patient", "set_case"], log,
-                  final_tool=("set_patient", "set_case"), extra_body=extra, options=options)
+                  final_tool=("set_patient", "set_case"))
     else:
-        run_agent(client, model, "case", PROMPTS["case"], request, tools, ["set_case"], log, final_tool="set_case",
-                  extra_body=extra, options=options)
+        run_agent(client, model, "case", PROMPTS["case"], request, tools, ["set_case"], log, final_tool="set_case")
 
     if tools.patient is not None:
         pid = tools.patient["patient"]
         run_agent(client, model, "planner", PROMPTS["planner_patient"], f"Request: {request}\nPatient: {pid}", tools,
-                  ["patient_resistance", "patient_what_if", "patient_surgery_options", "finish"], log, final_tool="finish", extra_body=extra, options=options,
+                  ["patient_resistance", "patient_what_if", "patient_surgery_options", "finish"], log, final_tool="finish",
                   max_turns=PLANNER_MAX_TURNS, stop_at_limit=True)
         if "prediction" not in tools.results:
             log.add("planner", "fallback", reason="planner skipped patient_resistance")
@@ -707,7 +692,7 @@ def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogat
                 tools.patient_resistance({"patient_id": pid})
             except ToolError as err:  # no OpenFOAM result and no live runs: say so instead of guessing
                 flag = {"id": "no_openfoam", "severity": "error", "text": str(err)}
-                return {"request": request, "model": model_info, "facts": {"case": {"patient_id": pid}, "flags": [flag]},
+                return {"request": request, "model": info, "facts": {"case": {"patient_id": pid}, "flags": [flag]},
                         "summary": f"No OpenFOAM result is available for patient {pid}: {err}.",
                         "summary_source": "code (no OpenFOAM result)", "seconds": round(time.time() - start, 2),
                         "log": log.steps}
@@ -716,16 +701,14 @@ def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogat
         case_json = json.dumps(asdict(tools.case))
         run_agent(client, model, "planner", PROMPTS["planner"], f"Request: {request}\nCase: {case_json}", tools,
                   ["predict_resistance", "formula_resistance", "what_if", "recommend_surgery", "finish"], log,
-                  final_tool="finish",
-                  extra_body=extra, options=options, max_turns=PLANNER_MAX_TURNS, stop_at_limit=True)
+                  final_tool="finish", max_turns=PLANNER_MAX_TURNS, stop_at_limit=True)
         if "prediction" not in tools.results:  # the plan must include a prediction; code enforces it
             log.add("planner", "fallback", reason="planner skipped predict_resistance")
             tools.predict_resistance(asdict(tools.case))
         case_facts = asdict(tools.case)
 
     flags_chosen = run_agent(client, model, "critic", PROMPTS["critic"], "Review the results.", tools,
-                             ["review_results", "check_parameters", "report_flags"], log, final_tool="report_flags",
-                             extra_body=extra, options=options)
+                             ["review_results", "check_parameters", "report_flags"], log, final_tool="report_flags")
     chosen = set(flags_chosen.get("flag_ids", [])) | {"model_scope"}
     chosen |= {f["id"] for f in tools.results["flags"] if f["severity"] == "error"}  # errors are never dropped
     facts = {"case": case_facts, **{k: v for k, v in tools.results.items() if k != "flags"},
@@ -736,8 +719,7 @@ def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogat
         prompt = f"Results JSON:\n{json.dumps(facts, indent=1)}"
         if attempt:
             prompt += f"\nYour previous text had problems: {problem}. Rewrite it."
-        text = run_agent(client, model, "explainer", explainer_prompt(facts), prompt, tools, [], log,
-                         extra_body=extra, options=options)
+        text = run_agent(client, model, "explainer", explainer_prompt(facts), prompt, tools, [], log)
         bad, missing = unsupported_numbers(text, facts), missing_numbers(text, facts)
         log.add("explainer", "number_check", unsupported=bad, missing=missing)
         problem = "; ".join(filter(None, [
@@ -749,5 +731,5 @@ def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogat
             break
     if summary is None:
         summary, source = template_summary(facts), "template (explainer failed the number check)"
-    return {"request": request, "model": model_info, "facts": facts, "summary": summary,
+    return {"request": request, "model": info, "facts": facts, "summary": summary,
             "summary_source": source, "seconds": round(time.time() - start, 2), "log": log.steps}

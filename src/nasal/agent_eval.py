@@ -103,8 +103,8 @@ def run(probes=PROBES, **pipeline_kwargs) -> dict:
         "explainer_template_fallback": sum(r["explainer"] == "template fallback" for r in rows),
         "median_seconds": sorted(r["seconds"] for r in rows)[n // 2],
     }
-    model = agents.MODEL_INFO if pipeline_kwargs.get("provider", "local") == "local" else {"name": agents.OPENAI_MODEL}
-    return {"model": model, "summary": summary, "runs": rows}
+    return {"model": agents.model_info(pipeline_kwargs.get("model") or agents.OPENAI_MODEL), "summary": summary,
+            "runs": rows}
 
 
 def main_report(result: dict) -> str:

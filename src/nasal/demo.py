@@ -1,9 +1,8 @@
 """Nasal0 demo (step 6): a patient's 3D airway colored by resistance, instant what-ifs, and the
-Nemotron agents running live.
+agents running live.
 
 Run `nasal-demo --labels <NasalSeg labels folder>` after `nasal-patients simulate` and
-`nasal-surrogate --patients`. The agents need the vLLM endpoint (NASAL_LLM_URL); the rest
-works without it.
+`nasal-surrogate --patients`. The agents need OPENAI_API_KEY; the rest works without it.
 """
 
 import json
@@ -127,8 +126,7 @@ def describe_step(step: dict) -> str | None:
     return None
 
 
-def ask_agents(pid, question, patients, flow, provider: str = "local", history: list[dict] | None = None,
-               **options):
+def ask_agents(pid, question, patients, flow, history: list[dict] | None = None, **options):
     """Run the four agents on one patient, yielding (steps markdown, answer markdown) as they go.
     With `history` (this session's earlier turns), the new turn is appended to it on success."""
     steps, q = [], queue.Queue()
@@ -137,7 +135,7 @@ def ask_agents(pid, question, patients, flow, provider: str = "local", history: 
     def work():
         try:
             result["out"] = agents.run_pipeline(f"Patient {pid}. {question}", patients=patients, patient_flow=flow,
-                                                listener=q.put, provider=provider, history=history, **options)
+                                                listener=q.put, history=history, **options)
         except Exception as err:  # shown in the UI instead of crashing the app
             result["error"] = f"{type(err).__name__}: {err}"
         q.put(None)
@@ -153,7 +151,7 @@ def ask_agents(pid, question, patients, flow, provider: str = "local", history: 
             steps.append(line)
             yield "\n".join(steps), ""
     if "error" in result:
-        yield "\n".join(steps), f"**Agents failed:** {agents.explain_error(result['error'], provider)}"
+        yield "\n".join(steps), f"**Agents failed:** {agents.explain_error(result['error'])}"
         return
     out = result["out"]
     if history is not None:
@@ -211,7 +209,7 @@ def build_app(labels_dir: Path, sim_path: Path = agents.PATIENTS_PATH, model_pat
             with gr.Column():
                 info = gr.Markdown()
                 table = gr.Dataframe(label="Pa·s/cm³", interactive=False)
-        gr.Markdown("### Agents · Nemotron 3.5 Lightning")
+        gr.Markdown(f"### Agents · OpenAI {agents.OPENAI_MODEL}")
         with gr.Row():
             question = gr.Textbox(value=DEFAULT_QUESTION, label="Ask", scale=4)
             go_btn = gr.Button("Run agents", variant="primary", scale=1)

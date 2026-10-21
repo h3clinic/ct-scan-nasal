@@ -1,6 +1,6 @@
 # Nasal0
 
-A prototype for evaluating nasal airway obstruction. It builds airway geometries (parametric tubes, and real patient airways from CT), estimates airflow resistance by region, and wraps the tools in a small-model agent loop that explains the results. Every language model stays at or under 33B parameters. Physics and decision rules are plain code, never a language model, so every number traces back to a formula or a simulation.
+A prototype for evaluating nasal airway obstruction. It builds airway geometries (parametric tubes, and real patient airways from CT), estimates airflow resistance by region, and wraps the tools in an agent loop on OpenAI's API that explains the results. Physics and decision rules are plain code, never a language model, so every number traces back to a formula or a simulation.
 
 ## At a glance
 
@@ -8,10 +8,10 @@ Built for the NVIDIA x Red Hat Small Models Hack; see [SUBMISSION.md](SUBMISSION
 
 - **Real anatomy:** 130 NasalSeg CT airways, 126 simulated in OpenFOAM on NVIDIA Brev (median nasal resistance 0.146 Pa·s/cm³ at 150 Pa).
 - **Fast surrogate:** under 0.2 ms per prediction, 16.3% mean side error (cross-validated) against 29.9% for "average patient".
-- **Four agents** on NVIDIA Nemotron 3.5 Lightning 30B-A3B (3B active), served with vLLM. On 16 fixed probes (`nasal-agents --eval`), all 16 runs completed and 15 set the right case. 3 invalid tool calls out of 98 were caught by code and recovered, and every number the Explainer wrote either passed the code check or was replaced by the code template. That run predates the switch of the patient tools from the surrogate to OpenFOAM and has not been repeated. For real patients, every number the agents report now comes from OpenFOAM.
+- **Four agents** on OpenAI's API (default `gpt-4.1-mini`, `store=False`). Code validates every tool call, and every number the Explainer writes is checked against the tool results. For real patients, every number the agents report comes from OpenFOAM. Their reliability on OpenAI has not been measured yet (`nasal-agents --eval`).
 - **Virtual surgery, verified in OpenFOAM:** on 10 obstructed real airways, Workflow++ reached the best plan's drop for 10 of 10, the standard rule for 1 of 10.
-- **Data:** every simulated result (125 patients, 96 surgery runs, 106 idealized airways, surrogates, agent evaluation) is in [dataset/](dataset/README.md), CC BY 4.0.
-- **Demo:** live at https://7a5747cfe97ac7e65b.gradio.live; `nasal-demo`, a 3D resistance map of a real patient with what-if sliders and live agent steps.
+- **Data:** every simulated result (125 patients, 96 surgery runs, 106 idealized airways, surrogates) is in [dataset/](dataset/README.md), CC BY 4.0.
+- **Apps:** `nasal-studio`, CT to airway, OpenFOAM, virtual surgery and agents in one window; `nasal-demo`, a 3D resistance map of a real patient with what-if sliders and live agent steps.
 
 ```bash
 pip install -e ".[dev,sim,surrogate,agents,patients,demo]"
@@ -20,16 +20,16 @@ pytest
 
 ## Design
 
-### Agents (small language models)
+### Agents
 
-All four agents run on one served model, [NVIDIA Nemotron 3.5 Lightning 30B-A3B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4) (NVFP4). It has **30B total parameters and 3B active per token**, so it meets the 33B limit. Each agent has its own instructions and may call only its own tools.
+All four agents run on one OpenAI model through OpenAI's API, `gpt-4.1-mini` by default (set it in the studio's Settings, with `--model`, or with `NASAL_OPENAI_MODEL`). OpenAI does not publish its models' sizes. Requests are sent with `store=False`, and only the patient id, the question and computed numbers are sent, never a CT. Each agent has its own instructions and may call only its own tools.
 
 | Agent | Model | Tools it may call | Job |
 | --- | --- | --- | --- |
-| Case | Nemotron 3.5 Lightning 30B-A3B | `set_case`, `set_patient` | Picks a real NasalSeg patient by id, or turns a description into the three case parameters; code validates them and returns errors for the model to fix |
-| Planner | Nemotron 3.5 Lightning 30B-A3B | `predict_resistance`, `formula_resistance`, `what_if`, `patient_resistance`, `recommend_surgery`, `patient_what_if`, `patient_surgery_options`, `finish` | Decides which physics tools answer the request. For a real patient, every tool reads OpenFOAM: the patient's own run, one procedure plan's run, or all 7 plans for surgery questions (stored runs, or new runs with `--live` and in the studio) |
-| Critic | Nemotron 3.5 Lightning 30B-A3B | `review_results`, `check_parameters`, `report_flags` | Runs the code checks and picks which flags to show; it can cite only flag ids the checks produced |
-| Explainer | Nemotron 3.5 Lightning 30B-A3B | none | Writes the plain-language summary; code rejects any number not in the tool results and retries once, then falls back to a template written by code |
+| Case | OpenAI (`gpt-4.1-mini`) | `set_case`, `set_patient` | Picks a real NasalSeg patient by id, or turns a description into the three case parameters; code validates them and returns errors for the model to fix |
+| Planner | OpenAI (`gpt-4.1-mini`) | `predict_resistance`, `formula_resistance`, `what_if`, `patient_resistance`, `recommend_surgery`, `patient_what_if`, `patient_surgery_options`, `finish` | Decides which physics tools answer the request. For a real patient, every tool reads OpenFOAM: the patient's own run, one procedure plan's run, or all 7 plans for surgery questions (stored runs, or new runs with `--live` and in the studio) |
+| Critic | OpenAI (`gpt-4.1-mini`) | `review_results`, `check_parameters`, `report_flags` | Runs the code checks and picks which flags to show; it can cite only flag ids the checks produced |
+| Explainer | OpenAI (`gpt-4.1-mini`) | none | Writes the plain-language summary; code rejects any number not in the tool results and retries once, then falls back to a template written by code |
 
 The agent count stays at four: more agents mostly add latency and failure points. Surgery questions go through the decision rules in `nasal.decision`: `recommend_surgery` runs the final-stage recommender on a synthetic case, and `patient_surgery_options` applies the same Workflow++ rule, technique reasons and dominant-region check to a real CT airway, using OpenFOAM's result for each plan (`nasal.patient_flow`). The rule thresholds are placeholders until an ENT reviews them.
 
@@ -49,7 +49,7 @@ The agent count stays at four: more agents mostly add latency and failure points
 | Comparison and logging | pandas + JSON agent log | **Done**: `nasal-agents --log` |
 | Demo | Gradio + Plotly | **Done**: `nasal.demo`, `nasal-demo` |
 | Studio (CT to surgery in one app) | Gradio + Plotly, OpenFOAM in Docker | **First version**: `nasal.studio`, `nasal-studio`; see Studio |
-| Model serving | vLLM `v0.27.1` on NVIDIA Brev (1x H100), OpenAI-style endpoint | **Done**: see Agents usage |
+| Language model | OpenAI API (`openai` Python client), key from Settings or `OPENAI_API_KEY` | **Done**: see Agents usage |
 
 ## Workflow
 
@@ -253,7 +253,7 @@ nasal-patients simulate --labels data/segment_auto --ids P022 P064 --out data/se
 ```bash
 pip install -e ".[demo]"
 nasal-demo --labels nasalseg/labels    # needs data/patient_sim.csv and data/patient_surrogate.json
-nasal-demo --labels nasalseg/labels --share    # also prints a public gradio.live link (valid 72 h; keep this machine and the vLLM tunnel up)
+nasal-demo --labels nasalseg/labels --share    # also prints a public gradio.live link (valid 72 h; keep this machine up)
 ```
 
 The demo opens at http://127.0.0.1:7860.
@@ -262,7 +262,7 @@ The demo opens at http://127.0.0.1:7860.
 - **3D airway:** an interactive Plotly view colored by each region's resistance, from that patient's OpenFOAM run or from the surrogate.
 - **What-if:** sliders widen or narrow each side's narrowest section and recolor instantly through the surrogate.
 - **Table:** OpenFOAM against the surrogate for every region, with the surrogate's error and its measured prediction time.
-- **Agents:** "Run agents" sends a question to the four agents and lists each step as it happens: tool calls, errors sent back, the code number check. Then it shows the summary and flags. The agents need the vLLM endpoint (see Agents); everything else works offline.
+- **Agents:** "Run agents" sends a question to the four agents and lists each step as it happens: tool calls, errors sent back, the code number check. Then it shows the summary and flags. The agents need `OPENAI_API_KEY` (see Agents); everything else works offline.
 
 ### Studio
 
@@ -277,22 +277,11 @@ One window, laid out like the [VOCO](https://github.com/h3clinic/VOCO) desktop a
 - **Virtual surgery:** tick turbinate reduction, valve repair or septoplasty, see the voxels each one adds, then run OpenFOAM on the plan or on all 7 plans. The table ranks the plans by OpenFOAM's resistance drop and marks the standard rule's pick.
 - **Faster local runs:** app runs stop at 900 iterations instead of 3000 and use up to 8 cores each, two cases at a time on a 20-core machine (`--procs`, `--iterations`). In the 13 stored 3000-iteration patient runs, total flow at iteration 600 was already within 0.11% of the final value, and P022 run this way matched its stored run within 0.22% in every region in 237 s.
 - **Settings** (top right): paste an OpenAI API key and press **Use key**. It stays in the app's memory for that browser session; tick **Remember on this computer** to keep it in the operating system's credential store (Windows Credential Manager, through `keyring`), never in a file. **Test** checks the key with OpenAI and **Forget** removes it. The panel also sets the OpenAI model, whether earlier questions are sent as context, and OpenFOAM's cores per case, cases at once and iterations (900, or 3000 to match the stored runs), and checks that Docker is running.
-- **Agents:** the console sends a question to the four agents, which read the same OpenFOAM results and can start the same runs as the app. They run on OpenAI's API only, with the key from Settings (or `OPENAI_API_KEY`) and the model set there (default `gpt-4.1-mini`, or `NASAL_OPENAI_MODEL`), with `store=False`. Earlier questions are kept as context only in the app's memory for that browser session, and **Clear** forgets them. Only the patient id, the question and computed numbers are sent, never the CT. Under OpenAI's API policy that data is not used for training, but it may be kept up to 30 days for abuse monitoring unless the organization has zero data retention. OpenAI does not publish its models' sizes, so the studio's agents are outside the project's 33B limit. If OpenAI refuses a request (no credits, a bad key, an unknown model), the console says so in plain words.
+- **Agents:** the console sends a question to the four agents, which read the same OpenFOAM results and can start the same runs as the app. They run on OpenAI's API only, with the key from Settings (or `OPENAI_API_KEY`) and the model set there (default `gpt-4.1-mini`, or `NASAL_OPENAI_MODEL`), with `store=False`. Earlier questions are kept as context only in the app's memory for that browser session, and **Clear** forgets them. Only the patient id, the question and computed numbers are sent, never the CT. Under OpenAI's API policy that data is not used for training, but it may be kept up to 30 days for abuse monitoring unless the organization has zero data retention. If OpenAI refuses a request (no credits, a bad key, an unknown model), the console says so in plain words.
 
 ### Agents
 
-Serve the model on a GPU machine. We used an NVIDIA Brev `scaleway_H100` instance with the flags from the model card's H100 recipe, minus speculative decoding:
-
-```bash
-docker run -d --name nemotron --gpus all --ipc=host -p 8000:8000 \
-  -v ~/.cache/huggingface:/root/.cache/huggingface vllm/vllm-openai:v0.27.1 \
-  --model nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 --served-model-name nemotron \
-  --max-model-len 65536 --max-num-seqs 64 --enable-prefix-caching --async-scheduling \
-  --mamba-backend flashinfer --mamba-ssm-cache-dtype float16 --mamba-cache-mode align \
-  --reasoning-parser nemotron_v3 --tool-call-parser qwen3_coder --enable-auto-tool-choice
-```
-
-Then forward port 8000 to your machine (for example `ssh -N -L 8000:localhost:8000 <instance>`) and run:
+The agents call OpenAI's API. Set your key (the studio takes it in Settings instead) and run:
 
 ```bash
 pip install -e ".[agents,surrogate]"
@@ -301,15 +290,11 @@ nasal-agents "Narrow valve, maybe 9 degrees, septum bends left. What if the valv
 
 It prints the summary and writes every model turn, tool call, tool result and check to `data/agent_log.json`.
 
-For a real patient (`nasal-agents "Patient P022: which surgery?"`), resistance, procedure what-ifs and surgery options come from the stored OpenFOAM runs (`data/patient_sim.csv`, `data/patient_surgery.csv`). Surgery options need all 7 plans, which are stored for the 12 patients in Step 5. `--live --labels nasalseg/labels` runs OpenFOAM in Docker for anything missing (900 iterations, a few minutes per case); without it the tool says the run is missing instead of estimating. `--openai` uses OpenAI's API instead of vLLM (see Studio).
+For a real patient (`nasal-agents "Patient P022: which surgery?"`), resistance, procedure what-ifs and surgery options come from the stored OpenFOAM runs (`data/patient_sim.csv`, `data/patient_surgery.csv`). Surgery options need all 7 plans, which are stored for the 12 patients in Step 5. `--live --labels nasalseg/labels` runs OpenFOAM in Docker for anything missing (900 iterations, a few minutes per case); without it the tool says the run is missing instead of estimating. `--model` picks another OpenAI model.
 
-`nasal-agents --eval` runs 16 fixed probes (`nasal.agent_eval`), scores them in code and writes `data/agent_eval.json`. The probes include patient ids, what-ifs, an unknown patient, an out-of-range valve angle and plain descriptions. The patient what-if probes now ask about procedures ("what if the turbinates were reduced?") instead of widening the narrowest section by a percentage, which only the surrogate could answer. Our run against the Brev endpoint, made with the earlier surrogate-based patient tools and probes and not yet repeated:
+`nasal-agents --eval` runs 16 fixed probes (`nasal.agent_eval`), scores them in code and writes `data/agent_eval.json`. The probes include patient ids, what-ifs, an unknown patient, an out-of-range valve angle and plain descriptions. The patient what-if probes ask about procedures ("what if the turbinates were reduced?"). It reports completed runs, correct case choices, invalid tool calls caught by code, what-ifs run when asked, and how often the Explainer passed the number check. It has not been run on OpenAI yet, so no results are reported here.
 
-- **Runs:** 16/16 completed, with a median of 5.9 s per four-agent run.
-- **Case choice:** 15/16 set the right case. The miss: "septum to the right 0.5" became +0.5, which means the left in this project, and no code check can catch a wrong sign.
-- **What-ifs:** 6/6 run when the request asked for one.
-- **Tool calls:** 3 invalid out of 98, all caught by code and sent back; the model then recovered to a valid case.
-- **Explainer:** 14/16 passed the number check the first time; the other 2 were replaced by the code template. `NASAL_LLM_URL` and `NASAL_LLM_MODEL` point it at another OpenAI-compatible server. `--thinking` turns on the model's reasoning mode, which is off by default for speed. The predictions use `data/surrogate.pt` when it exists and the formula otherwise; the Critic flags which one was used. The agent tests use a scripted stand-in for the model and need no server.
+The predictions for synthetic cases use `data/surrogate.pt` when it exists and the formula otherwise; the Critic flags which one was used. The agent tests use a scripted stand-in for the model and need no server.
 
 ## Surgical decision rules (Workflow++ prototype)
 

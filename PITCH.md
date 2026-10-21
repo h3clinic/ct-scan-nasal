@@ -30,11 +30,11 @@
 
 **2:05 · YOU** *(set the slider back to 0; click "Run agents" with the default question)*
 
-> "Now the same thing in plain language. Four agents, all one small model: NVIDIA Nemotron 3.5 Lightning, 30 billion parameters with only 3 billion active, served with vLLM on an NVIDIA Brev H100. The Case agent picks the patient, the Planner picks the physics tools, the Critic checks the results, and the Explainer writes the answer. The model only chooses tools. Every number comes from code, and code checks every number it writes. If one doesn't match, code writes the answer instead."
+> "Now the same thing in plain language. Four agents, all one OpenAI model. The Case agent picks the patient, the Planner picks the physics tools, the Critic checks the results, and the Explainer writes the answer. The model only chooses tools. Every number comes from code, and code checks every number it writes. If one doesn't match, code writes the answer instead."
 
 **2:40 · YOU** *(answer appears)*
 
-> "A few seconds. And the Critic flagged that the surrogate and the simulation disagree for this patient, so you know when not to trust the shortcut."
+> "And every resistance in that answer comes from this patient's own OpenFOAM simulation, not from the shortcut."
 
 **3:00 · PANKAJ** *(gallery: Virtual surgery)*
 
@@ -46,25 +46,25 @@
 
 **3:55 · YOU** *(answer appears)*
 
-> "Turbinate reduction plus valve repair. Predicted 6% lower resistance, and when we ran it in OpenFOAM, 14% lower: the best of all seven plans. The look-at-the-scan choice, turbinate reduction alone, gets 9%. It says why each step is there, and it warns about something a surgeon should know: most of this patient's resistance sits at the back, where none of these three procedures acts."
+> "Turbinate reduction plus valve repair: 14% lower resistance in OpenFOAM, the best of all seven plans. The look-at-the-scan choice, turbinate reduction alone, gets 9%. It says why each step is there, and it warns about something a surgeon should know: most of this patient's resistance sits at the back, where none of these three procedures acts."
 
 **4:20 · PANKAJ** *(gallery: Agents)*
 
-> "And the tool calling holds up: 16 test requests, including broken ones, all completed. Code caught every bad tool call, and the model recovered."
+> "And the tool calling is checked by code: bad arguments go back to the model to fix, and an unknown patient gets an error, not a guess."
 
 **4:35 · PANKAJ** *(close)*
 
-> "Real anatomy, real airflow, instant answers, and small models you can check. That's Nasal0. The link is live; try any patient."
+> "Real anatomy, real airflow, instant answers, and agents you can check. That's Nasal0."
 
 ---
 
 ## Hand-offs
 
 - 0:20 Pankaj → You: "...Nasal0 shows where it gets stuck." You start on the demo.
-- 3:00 You → Pankaj: "...when not to trust the shortcut." Pankaj switches to the gallery (Virtual surgery).
+- 3:00 You → Pankaj: "...not from the shortcut." Pankaj switches to the gallery (Virtual surgery).
 - 3:30 Pankaj → You: "...1 out of 10." You switch back to the demo.
 - 4:20 You → Pankaj: "...where none of these three procedures acts." Pankaj switches to the gallery (Agents).
 
 ## If the agents hang
 
-You say: "The agents are running on our H100; here's a recorded run," then play the gallery video from 1:05. Everything else works without the model. For the surgery answer, say the numbers above: they are the same every time.
+You say: "The agents need OpenAI's API; here's a recorded run," then play the gallery video from 1:05. Everything else works without the model. For the surgery answer, say the numbers above: they are the same every time.

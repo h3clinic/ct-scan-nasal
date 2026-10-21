@@ -229,19 +229,17 @@ def test_recommend_surgery_uses_the_final_stage_recommender():
                                                              "surgery": out}) == []
 
 
-def test_openai_provider_sends_store_false_and_no_vllm_options():
+def test_every_request_goes_to_openai_with_store_false():
     expected = round(evaluate(CaseParams(**CASE))["total_resistance"], 4)
     after = round(evaluate(CaseParams(15.0, 1.0, 0.5))["total_resistance"], 4)
     client = ScriptedClient(happy_script([f"Total resistance is {expected} Pa*s/cm^3, or {after} with a wider valve."]))
-    out = agents.run_pipeline("narrow valve", client=client, provider="openai")
+    out = agents.run_pipeline("narrow valve", client=client)
     assert all(r["store"] is False and "extra_body" not in r for r in client.requests)
     assert {r["model"] for r in client.requests} == {agents.OPENAI_MODEL}
-    assert out["model"]["name"] == agents.OPENAI_MODEL
-    local = ScriptedClient(happy_script([f"Total resistance is {expected} Pa*s/cm^3, or {after} with a wider valve."]))
-    agents.run_pipeline("narrow valve", client=local)
-    assert all("store" not in r and "extra_body" in r for r in local.requests)
-    with pytest.raises(ValueError):
-        agents.run_pipeline("narrow valve", client=local, provider="cloud")
+    assert out["model"]["name"] == agents.OPENAI_MODEL and "OpenAI" in out["model"]["provider"]
+    other = ScriptedClient(happy_script([f"Total resistance is {expected} Pa*s/cm^3, or {after} with a wider valve."]))
+    agents.run_pipeline("narrow valve", client=other, model="gpt-4.1")
+    assert {r["model"] for r in other.requests} == {"gpt-4.1"}
 
 
 def test_session_history_is_sent_as_context():

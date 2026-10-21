@@ -50,10 +50,10 @@ def test_docker_status_without_docker(monkeypatch):
     assert settings.docker_status("img") == "Docker is not installed."
 
 
-def test_openai_provider_needs_a_key(monkeypatch):
+def test_agents_need_an_openai_key(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="Settings"):
-        agents.run_pipeline("narrow valve", provider="openai")
+        agents.run_pipeline("narrow valve")
 
 
 def test_openai_errors_are_explained_in_plain_words():

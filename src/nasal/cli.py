@@ -249,12 +249,11 @@ def agents_main(argv: list[str] | None = None) -> None:
     parser.add_argument("request", nargs="?", default="", help='e.g. "narrow nasal valve, septum bent to the left; what if the valve is widened?"')
     parser.add_argument("--surrogate", type=Path, default=agents.SURROGATE_PATH)
     parser.add_argument("--log", type=Path, default=Path("data/agent_log.json"))
-    parser.add_argument("--thinking", action="store_true", help="turn on the model's reasoning mode")
+    parser.add_argument("--model", default=None, help=f"OpenAI model (default {agents.OPENAI_MODEL}); needs OPENAI_API_KEY")
     parser.add_argument("--labels", type=Path, default=None,
                         help="NasalSeg labels folder; with --live, patients without stored OpenFOAM runs are simulated")
     parser.add_argument("--live", action="store_true",
                         help="run OpenFOAM (Docker) for patient airways and surgery plans without stored runs")
-    parser.add_argument("--openai", action="store_true", help="use OpenAI's API (OPENAI_API_KEY) instead of vLLM")
     parser.add_argument("--eval", action="store_true",
                         help="ignore REQUEST and run the fixed reliability probes; writes data/agent_eval.json")
     args = parser.parse_args(argv)
@@ -263,12 +262,11 @@ def agents_main(argv: list[str] | None = None) -> None:
 
     patients = agents.load_patient_table()
     flow = PatientFlow(patients, agents.load_surgery(), args.labels, live=args.live) if patients is not None else None
-    provider = "openai" if args.openai else "local"
     if args.eval:
         from . import agent_eval
 
-        result = agent_eval.run(surrogate=agents.load_surrogate(args.surrogate), thinking=args.thinking,
-                                patients=patients, patient_flow=flow, provider=provider)
+        result = agent_eval.run(surrogate=agents.load_surrogate(args.surrogate), model=args.model,
+                                patients=patients, patient_flow=flow)
         out = args.log.with_name("agent_eval.json")
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
@@ -276,8 +274,8 @@ def agents_main(argv: list[str] | None = None) -> None:
         print(f"details: {out}")
         return
 
-    out = agents.run_pipeline(args.request, surrogate=agents.load_surrogate(args.surrogate), thinking=args.thinking,
-                              patients=patients, patient_flow=flow, provider=provider)
+    out = agents.run_pipeline(args.request, surrogate=agents.load_surrogate(args.surrogate), model=args.model,
+                              patients=patients, patient_flow=flow)
     args.log.parent.mkdir(parents=True, exist_ok=True)
     args.log.write_text(json.dumps(out, indent=2), encoding="utf-8")
     print(out["summary"])
