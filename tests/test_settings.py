@@ -54,3 +54,10 @@ def test_openai_provider_needs_a_key(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="Settings"):
         agents.run_pipeline("narrow valve", provider="openai")
+
+
+def test_openai_errors_are_explained_in_plain_words():
+    quota = "RateLimitError: Error code: 429 - {'error': {'type': 'insufficient_quota', 'code': 'credit_balance_exhausted'}}"
+    assert "no credits left" in agents.explain_error(quota) and agents.explain_error(quota).endswith("(RateLimitError)")
+    assert "did not accept the API key" in agents.explain_error("AuthenticationError: Error code: 401 invalid_api_key")
+    assert "RuntimeError: boom" in agents.explain_error("RuntimeError: boom")

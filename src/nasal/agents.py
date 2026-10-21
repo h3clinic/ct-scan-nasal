@@ -625,6 +625,23 @@ def load_patients(sim_path: Path = PATIENTS_PATH, model_path: Path = PATIENT_SUR
     return pd.read_csv(sim_path), PatientSurrogate.load(model_path)
 
 
+def explain_error(error: str, provider: str = "openai") -> str:
+    """A model-server error in words a user can act on; the raw error stays at the end for reference."""
+    hints = [
+        (("insufficient_quota", "credit_balance_exhausted"),
+         "OpenAI says this account has no credits left. Add credits under Billing at platform.openai.com, then send again."),
+        (("invalid_api_key", "AuthenticationError", "Incorrect API key"),
+         "OpenAI did not accept the API key. Check it in Settings."),
+        (("model_not_found", "does not exist"), "OpenAI does not offer that model to this key. Change the model in Settings."),
+        (("RateLimitError",), "OpenAI is limiting requests right now. Wait a moment and send again."),
+        (("APIConnectionError", "Connection error"), "Could not reach the model server. Check the internet connection."),
+    ]
+    for needles, text in hints:
+        if any(n in error for n in needles):
+            return f"{text} ({error.split(':')[0]})"
+    return f"{error} ({'OpenAI API' if provider == 'openai' else DEFAULT_URL})"
+
+
 def with_history(request: str, history: list[dict] | None, keep: int = 4) -> str:
     """The request with the last few turns of this session prepended as context."""
     if not history:

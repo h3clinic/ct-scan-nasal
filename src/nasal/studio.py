@@ -5,7 +5,7 @@ comes from OpenFOAM: the stored run where one exists (`data/patient_sim.csv`, `d
 otherwise a run started from the app in Docker (a few minutes each, kept for the session and shared with
 the agents through `nasal.patient_flow`). The patient surrogate is not used: on some airways it is off by
 more than 30%. Automatic segmentation needs `data/segment_model.joblib` from `nasal-segment train`. The
-agents need the vLLM endpoint (NASAL_LLM_URL) or OPENAI_API_KEY; the rest works without them.
+agents run on OpenAI's API with the key added in Settings (or OPENAI_API_KEY); the rest works without it.
 """
 
 import os
@@ -160,6 +160,7 @@ table td, table th { border-color:#292929 !important; color:#d0d0d0 !important; 
 .msg p { margin:0 0 4px; } .msg ul { margin:2px 0 2px 16px; padding:0; }
 #settings, #settings > div { background:var(--chrome) !important; border-left:1px solid var(--line) !important; }
 #settings .section-head { padding-left:0; }
+#model-label { flex:0 0 auto !important; min-width:0; padding:0 4px !important; white-space:nowrap; }
 #composer { background:var(--chrome) !important; border-top:1px solid var(--line) !important; padding:6px 10px !important;
   gap:6px !important; align-items:center; }
 .note { color:var(--faint); font-size:9px; padding:0 12px 6px; }
@@ -373,20 +374,18 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
     def plan_all(st, choices):
         yield from simulate_plans(st, choices, True)
 
-    def ask(pid, question, provider, memory, log, prefs):
-        backend = "openai" if provider.startswith("OpenAI") else "local"
+    def ask(pid, question, memory, log, prefs):
         key = prefs.get("api_key") or os.environ.get("OPENAI_API_KEY")
-        if backend == "openai" and not key:
+        if not key:
             raise gr.Error("add your OpenAI API key in Settings (top right) first")
         if not question.strip():
             raise gr.Error("type a question first")
         log = [*log, {"role": "you", "text": f"{pid} · {question}", "meta": "you"}]
         model_name = prefs.get("openai_model") or agents.OPENAI_MODEL
-        steps = {"role": "system", "text": "Running…", "meta": model_name if backend == "openai" else "Nemotron"}
-        options = {"api_key": key, "openai_model": model_name} if backend == "openai" else {"local_url": prefs.get("local_url")}
+        steps = {"role": "system", "text": "Running…", "meta": model_name}
         history = memory if prefs.get("remember_questions", True) else None
-        for steps_md, answer_md in demo.ask_agents(pid, question, patients, flow, provider=backend, history=history,
-                                                   **options):
+        for steps_md, answer_md in demo.ask_agents(pid, question, patients, flow, provider="openai", history=history,
+                                                   api_key=key, openai_model=model_name):
             steps["text"] = " · ".join(line.strip("-_ ").replace("**", "").replace("`", "")
                                        for line in steps_md.splitlines() if line.strip()) or "Running…"
             shown = [*log, steps] + ([{"role": "agents", "text": answer_md, "meta": "agents"}] if answer_md else [])
@@ -414,7 +413,6 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
                 test_key = gr.Button("Test", elem_classes="signal", min_width=60)
                 forget_key = gr.Button("Forget", elem_classes="signal", min_width=60)
             openai_model = gr.Textbox(value=agents.OPENAI_MODEL, label="OpenAI model", max_lines=1)
-            local_url = gr.Textbox(value=agents.DEFAULT_URL, label="Local Nemotron server (vLLM)", max_lines=1)
             remember_questions = gr.Checkbox(value=True, label="Send earlier questions of this session as context")
             gr.Markdown("The key stays in this app's memory for your browser session, and in the credential store "
                         "only if you tick Remember. It is sent only to OpenAI and never shown in full.", elem_classes="note")
@@ -466,9 +464,7 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
                     with gr.Row(elem_id="composer"):
                         question = gr.Textbox(placeholder="Ask the agents, e.g. which plan lowers resistance most and why?",
                                               show_label=False, scale=5, container=False)
-                        provider = gr.Dropdown(["Local Nemotron (vLLM)", "OpenAI API"],
-                                               value="OpenAI API" if os.environ.get("OPENAI_API_KEY")
-                                               else "Local Nemotron (vLLM)", show_label=False, scale=2, container=False)
+                        provider = gr.Markdown(elem_classes="note", elem_id="model-label")
                         send = gr.Button("Send", variant="primary", scale=0, min_width=70)
                         clear = gr.Button("Clear", scale=0, min_width=70, elem_classes="signal")
                     memory_info = gr.Markdown("Only the patient id, your question and computed numbers are sent to the "
@@ -485,7 +481,7 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         sim_btn.click(plan_once, [state, procedures], [state, *view_out, status])
         all_btn.click(plan_all, [state, procedures], [state, *view_out, status])
         for trigger in (send.click, question.submit):
-            trigger(ask, [pid, question, provider, memory, log, prefs], [messages, log, memory, question, memory_info])
+            trigger(ask, [pid, question, memory, log, prefs], [messages, log, memory, question, memory_info])
         clear.click(lambda: (console_html([]), [], [], "Session memory cleared."), None, [messages, log, memory, memory_info])
 
         # ---- settings
@@ -497,10 +493,15 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
                 return f"OpenAI key {settings.mask(os.environ['OPENAI_API_KEY'])} from the OPENAI_API_KEY variable."
             return "No OpenAI key yet: paste one below and press Use key."
 
+        def model_text(prefs) -> str:
+            if prefs.get("api_key") or os.environ.get("OPENAI_API_KEY"):
+                return f"OpenAI · {prefs.get('openai_model') or agents.OPENAI_MODEL}"
+            return "No key: open ⚙ Settings"
+
         def load_prefs():
             saved = settings.load_saved_key()
             prefs = {"api_key": saved, "saved": bool(saved), "remember_questions": True}
-            return prefs, key_text(prefs), "OpenAI API" if (saved or os.environ.get("OPENAI_API_KEY")) else gr.update()
+            return prefs, key_text(prefs), model_text(prefs)
 
         def set_key(text, remember, prefs):
             key = (text or "").strip()
@@ -509,7 +510,7 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
             saved = remember and settings.save_key(key)
             prefs = {**prefs, "api_key": key, "saved": bool(saved)}
             note = "" if saved or not remember else " Could not save it on this computer; it is kept for this session."
-            return prefs, key_text(prefs) + note, "", "OpenAI API"
+            return prefs, key_text(prefs) + note, "", model_text(prefs)
 
         def check_key(prefs):
             key = prefs.get("api_key") or os.environ.get("OPENAI_API_KEY")
@@ -520,7 +521,7 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         def drop_key(prefs):
             settings.forget_saved_key()
             prefs = {**prefs, "api_key": None, "saved": False}
-            return prefs, key_text(prefs), "Local Nemotron (vLLM)"
+            return prefs, key_text(prefs), model_text(prefs)
 
         def set_pref(name):
             return lambda value, prefs: {**prefs, name: value}
@@ -538,8 +539,9 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         key_box.submit(set_key, [key_box, remember_key, prefs], [prefs, key_status, key_box, provider])
         test_key.click(check_key, [prefs], [key_status])
         forget_key.click(drop_key, [prefs], [prefs, key_status, provider])
-        for comp, name in ((openai_model, "openai_model"), (local_url, "local_url"), (remember_questions, "remember_questions")):
+        for comp, name in ((openai_model, "openai_model"), (remember_questions, "remember_questions")):
             comp.change(set_pref(name), [comp, prefs], [prefs])
+        openai_model.change(lambda p: model_text(p), [prefs], [provider])
         apply_foam.click(apply_openfoam, [cores, at_once, iters], [status, docker_info])
         check_docker.click(lambda: settings.docker_status(IMAGE), None, [docker_info])
     return app

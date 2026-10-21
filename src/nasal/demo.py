@@ -153,8 +153,7 @@ def ask_agents(pid, question, patients, flow, provider: str = "local", history: 
             steps.append(line)
             yield "\n".join(steps), ""
     if "error" in result:
-        where = "OpenAI API" if provider == "openai" else options.get("local_url") or agents.DEFAULT_URL
-        yield "\n".join(steps), f"**Agents failed:** {result['error']} ({where})"
+        yield "\n".join(steps), f"**Agents failed:** {agents.explain_error(result['error'], provider)}"
         return
     out = result["out"]
     if history is not None:
