@@ -27,6 +27,7 @@ nasal-agents = "nasal.cli:agents_main"
 nasal-patients = "nasal.cli:patients_main"
 nasal-demo = "nasal.demo:main"
 nasal-studio = "nasal.studio:main"
+nasal-distill = "nasal.distill:main"
 nasal-segment = "nasal.cli:segment_main"
 
 [build-system]

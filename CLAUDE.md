@@ -14,7 +14,7 @@ Every code change ships with the matching doc, test and config changes in the sa
 - **No disclaimer labels.** Don't add "research only" or "not medical advice" labels; the owner removed them on purpose. State the model's technical limits (rigid walls, steady flow, placeholder thresholds) where they matter for reading a result.
 - **Physics and decisions are code.** Resistance, surrogate predictions and decision rules are plain functions. Language-model agents call them and never produce or alter numbers themselves.
 - **Decision rules need clinical input.** Don't invent clinical thresholds. Rules stay placeholders until an ENT reviews them, and the README says who reviewed what.
-- **Agents run on OpenAI.** The agents use OpenAI's API only (requests sent with `store=False`), with about four agents. No vLLM or Nemotron. Record the default model name in the README. Send the model only the patient id, the question and computed numbers, never a CT or other patient data.
+- **Agents run on OpenAI.** The agents use OpenAI's API only (requests sent with `store=False`), with about four agents. No vLLM or Nemotron. Record the default model name in the README. Send the model only the patient id, the question and computed numbers, never a CT or other patient data. The one exception is the local distilled Qwen explainer (`nasal.distill`), which runs on this computer and only writes answers from facts computed by code.
 - **Calibration comes from simulation.** Fit constants in the baseline only to OpenFOAM results, never by hand to make numbers look right.
 
 ## Before committing

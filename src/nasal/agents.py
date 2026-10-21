@@ -179,6 +179,7 @@ class Tools:
             "look_at_scan_plan": plan_name(standard), "look_at_scan_drop_pct": drop[standard],
             "look_at_scan_result": _drop_text(plan_name(standard), drop[standard], "in OpenFOAM"),
             "best_plan": plan_name(best), "best_drop_pct": drop[best],
+            "all_plans_drop_pct": {plan_name(p): drop[p] for p in sorted(totals, key=lambda p: -drop[p]) if p},
             "method": "smallest plan within 90% of the best OpenFOAM drop",
         }
         out.update(_technique_notes(recs[()], out["recommended_plan"]))
@@ -499,9 +500,9 @@ def _facts_numbers(obj) -> list[float]:
     return []
 
 
-def unsupported_numbers(text: str, facts: dict) -> list[str]:
-    """Numbers in text that do not match any number in facts at the precision written."""
-    allowed = _facts_numbers(facts) + [REFERENCE_PRESSURE] + list(range(0, 11))
+def unsupported_numbers(text: str, facts: dict, extra: tuple[float, ...] = ()) -> list[str]:
+    """Numbers in text that do not match any number in facts (or `extra`) at the precision written."""
+    allowed = _facts_numbers(facts) + [REFERENCE_PRESSURE, *extra] + list(range(0, 11))
     bad = []
     for token in NUMBER.findall(text):
         value = float(token)

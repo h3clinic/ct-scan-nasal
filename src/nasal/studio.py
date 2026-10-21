@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import agents, anatomy, demo, settings
+from . import agents, anatomy, demo, distill, settings
 from .decision import patient as ps
 from .params import REGIONS, SIDES
 from .patient_flow import _RUN_ID, FAST_ITERATIONS, WORK_DIR, PatientFlow, run_openfoam
@@ -375,12 +375,15 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         yield from simulate_plans(st, choices, True)
 
     def ask(pid, question, memory, log, prefs):
-        key = prefs.get("api_key") or os.environ.get("OPENAI_API_KEY")
-        if not key:
-            raise gr.Error("add your OpenAI API key in Settings (top right) first")
         if not question.strip():
             raise gr.Error("type a question first")
         log = [*log, {"role": "you", "text": f"{pid} · {question}", "meta": "you"}]
+        if prefs.get("answers_from") == "Local distilled Qwen (no API)":
+            yield from ask_local(pid, question, memory, log)
+            return
+        key = prefs.get("api_key") or os.environ.get("OPENAI_API_KEY")
+        if not key:
+            raise gr.Error("add your OpenAI API key in Settings (top right), or switch to the local model there")
         model_name = prefs.get("openai_model") or agents.OPENAI_MODEL
         steps = {"role": "system", "text": "Running…", "meta": model_name}
         history = memory if prefs.get("remember_questions", True) else None
@@ -392,6 +395,21 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
             yield console_html(shown), shown, memory, "", (f"{len(memory)} earlier question(s) in memory"
                                                            if history is not None else "Session memory is off.")
         # the final yield above already holds the answer; keep it as the new log
+
+    def ask_local(pid, question, memory, log):
+        """Code picks the tools, the distilled student writes the answer; nothing leaves this computer."""
+        steps = {"role": "system", "text": "Running the local model…", "meta": distill.STUDENT_MODEL}
+        yield console_html([*log, steps]), [*log, steps], memory, "", "Local model: nothing is sent off this computer."
+        try:
+            out = distill.answer_locally(question, pid, patients, flow)
+        except Exception as err:  # Ollama not running or the model not installed
+            answer = {"role": "agents", "text": f"**Local model failed:** {type(err).__name__}. Is the nasal-ollama "
+                                                f"container running with the {distill.STUDENT_MODEL} model?", "meta": "local"}
+        else:
+            steps["text"] = " · ".join(out["steps"]) + f" · {out['seconds']} s · {out['summary_source']}"
+            answer = {"role": "agents", "text": demo.as_markdown(out["summary"]), "meta": "local"}
+        shown = [*log, steps, answer]
+        yield console_html(shown), shown, memory, "", "Local model: nothing is sent off this computer."
 
     with gr.Blocks(title="Nasal0", fill_width=True) as app:
         gr.HTML('<div id="window-bar"><span class="mark">N0</span><strong>NASAL0</strong>'
@@ -412,6 +430,7 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
                 use_key = gr.Button("Use key", variant="primary", min_width=60)
                 test_key = gr.Button("Test", elem_classes="signal", min_width=60)
                 forget_key = gr.Button("Forget", elem_classes="signal", min_width=60)
+            answers_from = gr.Radio(["OpenAI agents", "Local distilled Qwen (no API)"], value="OpenAI agents", label="Answers from")
             openai_model = gr.Textbox(value=agents.OPENAI_MODEL, label="OpenAI model", max_lines=1)
             remember_questions = gr.Checkbox(value=True, label="Send earlier questions of this session as context")
             gr.Markdown("The key stays in this app's memory for your browser session, and in the credential store "
@@ -494,6 +513,8 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
             return "No OpenAI key yet: paste one below and press Use key."
 
         def model_text(prefs) -> str:
+            if prefs.get("answers_from") == "Local distilled Qwen (no API)":
+                return f"Local · {distill.STUDENT_MODEL}"
             if prefs.get("api_key") or os.environ.get("OPENAI_API_KEY"):
                 return f"OpenAI · {prefs.get('openai_model') or agents.OPENAI_MODEL}"
             return "No key: open ⚙ Settings"
@@ -539,8 +560,10 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         key_box.submit(set_key, [key_box, remember_key, prefs], [prefs, key_status, key_box, provider])
         test_key.click(check_key, [prefs], [key_status])
         forget_key.click(drop_key, [prefs], [prefs, key_status, provider])
-        for comp, name in ((openai_model, "openai_model"), (remember_questions, "remember_questions")):
+        for comp, name in ((openai_model, "openai_model"), (remember_questions, "remember_questions"),
+                           (answers_from, "answers_from")):
             comp.change(set_pref(name), [comp, prefs], [prefs])
+        answers_from.change(lambda value, p: model_text({**p, "answers_from": value}), [answers_from, prefs], [provider])
         openai_model.change(lambda p: model_text(p), [prefs], [provider])
         apply_foam.click(apply_openfoam, [cores, at_once, iters], [status, docker_info])
         check_docker.click(lambda: settings.docker_status(IMAGE), None, [docker_info])
