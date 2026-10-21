@@ -127,7 +127,8 @@ def describe_step(step: dict) -> str | None:
     return None
 
 
-def ask_agents(pid, question, patients, flow, provider: str = "local", history: list[dict] | None = None):
+def ask_agents(pid, question, patients, flow, provider: str = "local", history: list[dict] | None = None,
+               **options):
     """Run the four agents on one patient, yielding (steps markdown, answer markdown) as they go.
     With `history` (this session's earlier turns), the new turn is appended to it on success."""
     steps, q = [], queue.Queue()
@@ -136,7 +137,7 @@ def ask_agents(pid, question, patients, flow, provider: str = "local", history: 
     def work():
         try:
             result["out"] = agents.run_pipeline(f"Patient {pid}. {question}", patients=patients, patient_flow=flow,
-                                                listener=q.put, provider=provider, history=history)
+                                                listener=q.put, provider=provider, history=history, **options)
         except Exception as err:  # shown in the UI instead of crashing the app
             result["error"] = f"{type(err).__name__}: {err}"
         q.put(None)
@@ -152,7 +153,7 @@ def ask_agents(pid, question, patients, flow, provider: str = "local", history: 
             steps.append(line)
             yield "\n".join(steps), ""
     if "error" in result:
-        where = "OpenAI API" if provider == "openai" else agents.DEFAULT_URL
+        where = "OpenAI API" if provider == "openai" else options.get("local_url") or agents.DEFAULT_URL
         yield "\n".join(steps), f"**Agents failed:** {result['error']} ({where})"
         return
     out = result["out"]

@@ -17,7 +17,7 @@ surrogate = ["torch>=2.2"]
 agents = ["openai>=1.40"]
 patients = ["pynrrd>=1.0"]
 segment = ["pynrrd>=1.0", "scikit-image>=0.21", "scikit-learn>=1.3"]
-demo = ["gradio>=4", "plotly>=5", "scikit-image>=0.21", "pynrrd>=1.0", "openai>=1.40"]
+demo = ["gradio>=4", "plotly>=5", "scikit-image>=0.21", "pynrrd>=1.0", "openai>=1.40", "keyring>=24"]
 
 [project.scripts]
 nasal-generate = "nasal.cli:main"

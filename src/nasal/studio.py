@@ -15,10 +15,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import agents, anatomy, demo
+from . import agents, anatomy, demo, settings
 from .decision import patient as ps
 from .params import REGIONS, SIDES
 from .patient_flow import _RUN_ID, FAST_ITERATIONS, WORK_DIR, PatientFlow, run_openfoam
+from .simulate import IMAGE
 
 PROCEDURE_NAMES = {"Turbinate reduction": "turbinate_reduction", "Valve repair": "valve_repair",
                    "Septoplasty": "septoplasty"}
@@ -128,7 +129,8 @@ label, .wrap label span, .prose, .info, td, th { font-size:11px !important; }
 #workspace { gap:0 !important; min-width:0; }
 #topbar { min-height:44px; display:flex; justify-content:flex-end; align-items:center; gap:8px; padding:0 12px;
   background:var(--chrome); border-bottom:1px solid var(--line); color:var(--muted); font-size:10px; }
-#topbar p, #topbar * { margin:0; font-size:10px !important; color:var(--muted) !important; }
+#status, #status * { margin:0; font-size:10px !important; color:var(--muted) !important; text-align:right; }
+#topbar { flex-wrap:nowrap !important; }
 .pane-title { display:flex; align-items:center; justify-content:space-between; min-height:36px; padding:0 12px;
   background:var(--chrome); border-bottom:1px solid var(--line-soft); color:#d0d0d0; font-size:10px; font-weight:650; }
 #session { gap:0 !important; flex-wrap:nowrap !important; }
@@ -156,6 +158,8 @@ table td, table th { border-color:#292929 !important; color:#d0d0d0 !important; 
 .msg.system { color:var(--muted); }
 .msg .meta { color:var(--muted); font-size:9px; white-space:nowrap; }
 .msg p { margin:0 0 4px; } .msg ul { margin:2px 0 2px 16px; padding:0; }
+#settings, #settings > div { background:var(--chrome) !important; border-left:1px solid var(--line) !important; }
+#settings .section-head { padding-left:0; }
 #composer { background:var(--chrome) !important; border-top:1px solid var(--line) !important; padding:6px 10px !important;
   gap:6px !important; align-items:center; }
 .note { color:var(--faint); font-size:9px; padding:0 12px 6px; }
@@ -210,9 +214,11 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
     labels = {f.name.split("_")[0]: f for f in Path(labels_dir).glob("*_seg.nrrd")}
     ids = sorted(set(images) & set(labels))
     default = demo.DEFAULT_PATIENT if demo.DEFAULT_PATIENT in ids else ids[0]
-    procs, parallel = flow.procs, flow.parallel
     session_runs: dict[tuple[str, str], dict] = {}  # runs on airways that are not NasalSeg expert labels
-    ready = f"OpenFOAM local · {procs} cores × {parallel} cases · {iterations} iterations"
+    max_cores = max(1, (os.cpu_count() or 4) - 2)
+
+    def ready_text() -> str:
+        return f"OpenFOAM local · {flow.procs} cores × {flow.parallel} cases · {flow.iterations} iterations"
 
     def openfoam_results(st) -> dict[str, dict]:
         """Plan label -> OpenFOAM record for this airway: stored runs (expert labels only) plus runs made here."""
@@ -266,7 +272,7 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
 
     def reconstruct(pid, upload, source):
         st = load_airway(pid, upload, source)
-        return (st, *original_view(st), ready)
+        return (st, *original_view(st), ready_text())
 
     def run_cases(st, jobs: list[tuple[str, np.ndarray]]):
         """Generator: runs (plan label, tags) cases in parallel, yielding progress text; the last item
@@ -278,16 +284,16 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         def work(label, tags):
             case_dir = WORK_DIR / st["name"] / f"{label}_{next(_RUN_ID)}"
             try:
-                record = run_openfoam(tags, st["spacing"], st["origin"], st["cuts"], case_dir, procs, iterations)
+                record = run_openfoam(tags, st["spacing"], st["origin"], st["cuts"], case_dir, flow.procs, flow.iterations)
                 if st["expert"]:  # shared with the agents
-                    flow.runs[(st["name"], label)] = {**record, "source": f"OpenFOAM run now ({iterations} iterations)"}
+                    flow.runs[(st["name"], label)] = {**record, "source": f"OpenFOAM run now ({flow.iterations} iterations)"}
                 else:
                     session_runs[(st["key"], label)] = record
             except Exception as err:  # shown in the UI
                 errors[label] = f"{type(err).__name__}: {str(err).splitlines()[0] if str(err) else ''}"
 
         start = time.time()
-        with ThreadPoolExecutor(max_workers=parallel) as pool:
+        with ThreadPoolExecutor(max_workers=flow.parallel) as pool:
             futures = [pool.submit(work, label, tags) for label, tags in jobs]
             while not all(f.done() for f in futures):
                 done = sum(f.done() for f in futures)
@@ -301,12 +307,12 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
     def simulate_original(st):
         if not st:
             raise gr.Error("open an airway first")
-        msg = ready
+        msg = ready_text()
         if "none" not in openfoam_results(st):
             for msg in run_cases(st, [("none", st["tags"])]):
                 if msg is not None:
                     yield (*([gr.update()] * 4), msg)
-            msg = msg or ready
+            msg = msg or ready_text()
         yield (*original_view(st), msg)
 
     def surgery_view(st, plan):
@@ -346,19 +352,19 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
             raise gr.Error("open an airway first")
         plan = plan_from_choices(choices)
         view = surgery_view(st, plan)
-        yield (*view, ready)
+        yield (*view, ready_text())
         st = view[0]
         plans = ps.candidate_plans() if every else [plan]
         jobs = [("none", st["tags"])] + [(ps.label(p), st["operated"] if p == plan else
                                           ps.apply_patient_plan(st["tags"], st["cuts"], st["spacing"], p)) for p in plans if p]
         have = openfoam_results(st)
         jobs = [(label, tags) for label, tags in jobs if label not in have]
-        msg = ready
+        msg = ready_text()
         if jobs:
             for msg in run_cases(st, jobs):
                 if msg is not None:
                     yield (*([gr.update()] * 5), msg)
-            msg = msg or ready
+            msg = msg or ready_text()
         yield (*surgery_view(st, plan), msg)
 
     def plan_once(st, choices):
@@ -367,19 +373,25 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
     def plan_all(st, choices):
         yield from simulate_plans(st, choices, True)
 
-    def ask(pid, question, provider, memory, log):
+    def ask(pid, question, provider, memory, log, prefs):
         backend = "openai" if provider.startswith("OpenAI") else "local"
-        if backend == "openai" and not os.environ.get("OPENAI_API_KEY"):
-            raise gr.Error("set the OPENAI_API_KEY environment variable before starting nasal-studio")
+        key = prefs.get("api_key") or os.environ.get("OPENAI_API_KEY")
+        if backend == "openai" and not key:
+            raise gr.Error("add your OpenAI API key in Settings (top right) first")
         if not question.strip():
             raise gr.Error("type a question first")
         log = [*log, {"role": "you", "text": f"{pid} · {question}", "meta": "you"}]
-        steps = {"role": "system", "text": "Running…", "meta": provider}
-        for steps_md, answer_md in demo.ask_agents(pid, question, patients, flow, provider=backend, history=memory):
+        model_name = prefs.get("openai_model") or agents.OPENAI_MODEL
+        steps = {"role": "system", "text": "Running…", "meta": model_name if backend == "openai" else "Nemotron"}
+        options = {"api_key": key, "openai_model": model_name} if backend == "openai" else {"local_url": prefs.get("local_url")}
+        history = memory if prefs.get("remember_questions", True) else None
+        for steps_md, answer_md in demo.ask_agents(pid, question, patients, flow, provider=backend, history=history,
+                                                   **options):
             steps["text"] = " · ".join(line.strip("-_ ").replace("**", "").replace("`", "")
                                        for line in steps_md.splitlines() if line.strip()) or "Running…"
             shown = [*log, steps] + ([{"role": "agents", "text": answer_md, "meta": "agents"}] if answer_md else [])
-            yield console_html(shown), shown, memory, "", f"{len(memory)} earlier question(s) in memory"
+            yield console_html(shown), shown, memory, "", (f"{len(memory)} earlier question(s) in memory"
+                                                           if history is not None else "Session memory is off.")
         # the final yield above already holds the answer; keep it as the new log
 
     with gr.Blocks(title="Nasal0", fill_width=True) as app:
@@ -388,6 +400,33 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         state = gr.State({})
         memory = gr.State([])
         log = gr.State([])
+        prefs = gr.State({})  # this browser session's agent settings, including the OpenAI key
+        with gr.Sidebar(label="Settings", open=False, position="right", width=330, elem_id="settings") as settings_bar:
+            gr.HTML('<div class="section-head"><span>Agents</span></div>')
+            key_status = gr.Markdown(elem_classes="note")
+            key_box = gr.Textbox(label="OpenAI API key", type="password", placeholder="Paste your key (sk-…)",
+                                 max_lines=1)
+            remember_key = gr.Checkbox(value=False, interactive=settings.can_remember(),
+                                       label="Remember on this computer (Windows Credential Manager)"
+                                       if settings.can_remember() else "Remember on this computer (needs keyring)")
+            with gr.Row():
+                use_key = gr.Button("Use key", variant="primary", min_width=60)
+                test_key = gr.Button("Test", elem_classes="signal", min_width=60)
+                forget_key = gr.Button("Forget", elem_classes="signal", min_width=60)
+            openai_model = gr.Textbox(value=agents.OPENAI_MODEL, label="OpenAI model", max_lines=1)
+            local_url = gr.Textbox(value=agents.DEFAULT_URL, label="Local Nemotron server (vLLM)", max_lines=1)
+            remember_questions = gr.Checkbox(value=True, label="Send earlier questions of this session as context")
+            gr.Markdown("The key stays in this app's memory for your browser session, and in the credential store "
+                        "only if you tick Remember. It is sent only to OpenAI and never shown in full.", elem_classes="note")
+            gr.HTML('<div class="section-head"><span>OpenFOAM</span></div>')
+            cores = gr.Slider(1, max_cores, value=flow.procs, step=1, label="Cores per case")
+            at_once = gr.Slider(1, max_cores, value=flow.parallel, step=1, label="Cases at once")
+            iters = gr.Radio([f"{FAST_ITERATIONS} (fast; within 0.22% of full runs)", "3000 (same as the stored runs)"],
+                             value=f"{FAST_ITERATIONS} (fast; within 0.22% of full runs)" if flow.iterations == FAST_ITERATIONS
+                             else "3000 (same as the stored runs)", label="Iterations")
+            apply_foam = gr.Button("Apply OpenFOAM settings", elem_classes="signal")
+            check_docker = gr.Button("Check Docker", elem_classes="signal")
+            docker_info = gr.Markdown(elem_classes="note")
         with gr.Row(elem_id="shell"):
             with gr.Column(elem_id="sidebar", scale=0, min_width=258):
                 gr.HTML(f'<div class="section-head"><span>Patients</span><span class="count">{len(ids)}</span></div>')
@@ -401,7 +440,9 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
                                 "from OpenFOAM. Decision thresholds are placeholders until an ENT reviews them.",
                                 elem_classes="note")
             with gr.Column(elem_id="workspace", scale=1):
-                status = gr.Markdown(ready, elem_id="topbar")
+                with gr.Row(elem_id="topbar"):
+                    status = gr.Markdown(ready_text(), elem_id="status")
+                    open_settings = gr.Button("⚙ Settings", elem_classes="signal", scale=0, min_width=110)
                 with gr.Row(elem_id="session"):
                     with gr.Column(elem_id="monitor", scale=1):
                         gr.HTML('<div class="pane-title"><span>Airway</span><span>OpenFOAM resistance, Pa·s/cm³</span></div>')
@@ -425,8 +466,8 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
                     with gr.Row(elem_id="composer"):
                         question = gr.Textbox(placeholder="Ask the agents, e.g. which plan lowers resistance most and why?",
                                               show_label=False, scale=5, container=False)
-                        provider = gr.Dropdown(["Local Nemotron (vLLM)", f"OpenAI API ({agents.OPENAI_MODEL})"],
-                                               value=f"OpenAI API ({agents.OPENAI_MODEL})" if os.environ.get("OPENAI_API_KEY")
+                        provider = gr.Dropdown(["Local Nemotron (vLLM)", "OpenAI API"],
+                                               value="OpenAI API" if os.environ.get("OPENAI_API_KEY")
                                                else "Local Nemotron (vLLM)", show_label=False, scale=2, container=False)
                         send = gr.Button("Send", variant="primary", scale=0, min_width=70)
                         clear = gr.Button("Clear", scale=0, min_width=70, elem_classes="signal")
@@ -444,8 +485,63 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         sim_btn.click(plan_once, [state, procedures], [state, *view_out, status])
         all_btn.click(plan_all, [state, procedures], [state, *view_out, status])
         for trigger in (send.click, question.submit):
-            trigger(ask, [pid, question, provider, memory, log], [messages, log, memory, question, memory_info])
+            trigger(ask, [pid, question, provider, memory, log, prefs], [messages, log, memory, question, memory_info])
         clear.click(lambda: (console_html([]), [], [], "Session memory cleared."), None, [messages, log, memory, memory_info])
+
+        # ---- settings
+        def key_text(prefs) -> str:
+            if prefs.get("api_key"):
+                where = "saved on this computer" if prefs.get("saved") else "for this session"
+                return f"OpenAI key {settings.mask(prefs['api_key'])}, {where}."
+            if os.environ.get("OPENAI_API_KEY"):
+                return f"OpenAI key {settings.mask(os.environ['OPENAI_API_KEY'])} from the OPENAI_API_KEY variable."
+            return "No OpenAI key yet: paste one below and press Use key."
+
+        def load_prefs():
+            saved = settings.load_saved_key()
+            prefs = {"api_key": saved, "saved": bool(saved), "remember_questions": True}
+            return prefs, key_text(prefs), "OpenAI API" if (saved or os.environ.get("OPENAI_API_KEY")) else gr.update()
+
+        def set_key(text, remember, prefs):
+            key = (text or "").strip()
+            if not settings.looks_like_key(key):
+                raise gr.Error("That does not look like an OpenAI key (it starts with sk-).")
+            saved = remember and settings.save_key(key)
+            prefs = {**prefs, "api_key": key, "saved": bool(saved)}
+            note = "" if saved or not remember else " Could not save it on this computer; it is kept for this session."
+            return prefs, key_text(prefs) + note, "", "OpenAI API"
+
+        def check_key(prefs):
+            key = prefs.get("api_key") or os.environ.get("OPENAI_API_KEY")
+            if not key:
+                raise gr.Error("add a key first")
+            return key_text(prefs) + " " + settings.test_key(key)[1]
+
+        def drop_key(prefs):
+            settings.forget_saved_key()
+            prefs = {**prefs, "api_key": None, "saved": False}
+            return prefs, key_text(prefs), "Local Nemotron (vLLM)"
+
+        def set_pref(name):
+            return lambda value, prefs: {**prefs, name: value}
+
+        def apply_openfoam(n_cores, n_cases, iteration_choice):
+            flow.procs, flow.parallel = int(n_cores), int(n_cases)
+            flow.iterations = int(iteration_choice.split()[0])
+            note = (" Cores × cases is more than this machine has; runs will share cores."
+                    if flow.procs * flow.parallel > max_cores else "")
+            return ready_text(), ready_text() + "." + note
+
+        app.load(load_prefs, None, [prefs, key_status, provider])
+        open_settings.click(lambda: gr.Sidebar(open=True), None, [settings_bar])
+        use_key.click(set_key, [key_box, remember_key, prefs], [prefs, key_status, key_box, provider])
+        key_box.submit(set_key, [key_box, remember_key, prefs], [prefs, key_status, key_box, provider])
+        test_key.click(check_key, [prefs], [key_status])
+        forget_key.click(drop_key, [prefs], [prefs, key_status, provider])
+        for comp, name in ((openai_model, "openai_model"), (local_url, "local_url"), (remember_questions, "remember_questions")):
+            comp.change(set_pref(name), [comp, prefs], [prefs])
+        apply_foam.click(apply_openfoam, [cores, at_once, iters], [status, docker_info])
+        check_docker.click(lambda: settings.docker_status(IMAGE), None, [docker_info])
     return app
 
 

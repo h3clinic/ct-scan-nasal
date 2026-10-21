@@ -636,14 +636,15 @@ def with_history(request: str, history: list[dict] | None, keep: int = 4) -> str
 def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogate=None,
                  thinking: bool = False, patients=None, listener: Callable[[dict], None] | None = None,
                  labels_dir: Path | None = None, surgery=None, patient_flow=None, provider: str = "local",
-                 history: list[dict] | None = None) -> dict:
+                 history: list[dict] | None = None, api_key: str | None = None, openai_model: str | None = None,
+                 local_url: str | None = None) -> dict:
     """Case -> Planner -> Critic -> Explainer. Returns the facts, the summary and the full agent log.
     With `patients` the Case agent may pick a real NasalSeg patient; that patient's resistance, what-ifs and
     surgery options come from OpenFOAM through `patient_flow` (by default the stored runs in `patients` and
     `surgery`, with `labels_dir` for the airways; no live runs).
 
-    provider "local" uses the vLLM endpoint (NASAL_LLM_URL); "openai" uses OpenAI's API (OPENAI_API_KEY,
-    NASAL_OPENAI_MODEL) with store=False. `history` holds earlier {"question", "answer"} turns of this
+    provider "local" uses the vLLM endpoint (`local_url`, else NASAL_LLM_URL); "openai" uses OpenAI's API with
+    store=False, with `api_key` (else OPENAI_API_KEY) and `openai_model` (else NASAL_OPENAI_MODEL). `history` holds earlier {"question", "answer"} turns of this
     session; it lives only in the caller's memory and is sent as context with the new request."""
     if provider not in PROVIDERS:
         raise ValueError(f"provider must be one of {PROVIDERS}")
@@ -652,16 +653,17 @@ def run_pipeline(request: str, client=None, model: str = DEFAULT_MODEL, surrogat
     if provider == "openai":
         if client is None:
             from openai import OpenAI
-            if not os.environ.get("OPENAI_API_KEY"):
-                raise RuntimeError("set OPENAI_API_KEY to use the OpenAI backend")
-            client = OpenAI()  # api.openai.com; never NASAL_LLM_URL
-        model = model if model != DEFAULT_MODEL else OPENAI_MODEL
+            key = api_key or os.environ.get("OPENAI_API_KEY")
+            if not key:
+                raise RuntimeError("add an OpenAI API key in Settings, or set OPENAI_API_KEY")
+            client = OpenAI(api_key=key, base_url="https://api.openai.com/v1")  # never NASAL_LLM_URL
+        model = model if model != DEFAULT_MODEL else (openai_model or OPENAI_MODEL)
         extra, options = None, {"store": False}
         model_info = {"name": model, "provider": "OpenAI API (store=False)", "total_params": "not published"}
     else:
         if client is None:
             from openai import OpenAI
-            client = OpenAI(base_url=DEFAULT_URL, api_key=os.environ.get("NASAL_LLM_KEY", "none"))
+            client = OpenAI(base_url=local_url or DEFAULT_URL, api_key=os.environ.get("NASAL_LLM_KEY", "none"))
         extra = {"chat_template_kwargs": {"enable_thinking": thinking}}
     if patient_flow is None and patients is not None:
         from .patient_flow import PatientFlow
