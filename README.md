@@ -326,14 +326,14 @@ We ran the 12 most obstructed patients whose labels pass the position check. 2 p
 
 | Plan chosen by | Mean OpenFOAM resistance drop | Within 90% of the best plan's drop |
 | --- | --- | --- |
-| Workflow++ (surrogate) | 10.2% | 10 of 10 (the best plan itself in 8) |
-| Standard rule | 7.2% | 1 of 10 |
-| Best plan per patient (OpenFOAM) | 10.2% | |
+| Workflow++ (surrogate) | 10.5% | 10 of 10 (the best plan itself in 8) |
+| Standard rule | 7.5% | 1 of 10 |
+| Best plan per patient (OpenFOAM) | 10.5% | |
 
-- **Best plan:** turbinate reduction with valve repair was best or near-best for every patient (mean drop 10.2%, up to 26.7%). Turbinate reduction alone averaged 7.8% and valve repair alone 1.9%.
-- **Septoplasty raised resistance** in this model (mean −7.9% alone). The voxel version removes more airway than it adds, so this is an artifact of the model, not a finding about septoplasty. Workflow++ never chose it; the standard rule chose it for 2 patients.
-- **The surrogate ranks plans better than it sizes them:** its predicted drops correlate only 0.47 with OpenFOAM's, with a mean error of 6.1 percentage points. It still picked the right plan, because the plans' differences were large.
-- **Limits:** this is a 10-patient sample of the most obstructed airways, with one-layer changes, steady flow and rigid walls. The rules' thresholds are unreviewed placeholders. P129 has a flipped label header (see Real patients), and its 8 surgery runs were made before that fix and have not been re-run.
+- **Best plan:** turbinate reduction with valve repair was best or near-best for every patient (mean drop 10.5%, up to 26.7%). Turbinate reduction alone averaged 8.2% and valve repair alone 1.9%.
+- **Septoplasty raised resistance** in this model (mean −8.3% alone). The voxel version removes more airway than it adds, so this is an artifact of the model, not a finding about septoplasty. Workflow++ never chose it; the standard rule chose it for 2 patients.
+- **The surrogate ranks plans better than it sizes them:** its predicted drops correlate only 0.50 with OpenFOAM's, with a mean error of 6.3 percentage points. It still picked the right plan, because the plans' differences were large.
+- **Limits:** this is a 10-patient sample of the most obstructed airways, with one-layer changes, steady flow and rigid walls. The rules' thresholds are unreviewed placeholders.
 
 ## Keeping docs in sync
 

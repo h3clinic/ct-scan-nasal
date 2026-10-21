@@ -80,7 +80,7 @@ It's a standard steady-state OpenFOAM setup (k-omega SST turbulence model). The 
 A simulation takes minutes on many cores. The surrogate takes well under a millisecond, which is what makes sliders and agent answers instant. When it disagrees with a simulation by more than 25%, the Critic says so.
 
 **How good is the surrogate?**
-On real airways it averages a 16% error per side, against 30% for simply guessing the average patient. Its estimates of how much a surgery plan helps are rough (correlation 0.47 with OpenFOAM), which is why plans were scored in OpenFOAM.
+On real airways it averages a 16% error per side, against 30% for simply guessing the average patient. Its estimates of how much a surgery plan helps are rough (correlation 0.50 with OpenFOAM), which is why plans were scored in OpenFOAM.
 
 **Why one model for four agents?**
 Four roles with separate tools and checks, on one small model, keep it fast and cheap: a whole run takes about 6 seconds. More agents mostly add latency and failure points.
