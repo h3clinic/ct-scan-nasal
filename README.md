@@ -348,19 +348,19 @@ A small model that writes the answers on this computer, without an API: it expla
 
 - **Local answers:** `nasal.distill.answer_locally` picks the tools from the question in code (the patient's OpenFOAM result; the named procedure's before and after; all plans when the question is about surgery) and asks the student. An answer whose numbers are all right but that leaves out a key result gets those results stated first by code; one with a wrong number is retried once and then replaced by the code template.
 
-**Results.** The build was stopped after 330 of 442 questions: 286 answers passed the check and 44 were dropped (most from the single-plan questions of the last surgery patients). The student trained on 260 of them in 19 minutes on an RTX 5070 Laptop GPU (12 GB); the held-out loss went from 1.103 to 0.454. On the 26 held-out questions (15 patients the student never saw), each model answering once:
+**Results.** All 442 questions were asked: 402 answers passed the check (which also requires every procedure of a combined plan to be named) and 40 were dropped after three tries. The student trained on the 359 training answers in 22 minutes on an RTX 5070 Laptop GPU (12 GB); the held-out loss went from 1.058 to 0.401. On the 43 held-out questions (15 patients the student never saw), each model answering once:
 
 | | Student `nasal-explainer` (Qwen2.5-1.5B) | Teacher (Qwen2.5-14B) |
 | --- | --- | --- |
 | Size (4-bit) | 0.99 GB | 9.0 GB |
-| Passes the full number check | 22 / 26 | 13 / 26 |
-| No number outside the facts | 26 / 26 | 26 / 26 |
-| Median time per answer (same GPU) | 1.9 s | 12.0 s |
-| Median length | 142 words | 187 words |
+| Passes the full check | 37 / 43 | 27 / 43 |
+| No number outside the facts | 42 / 43 | 41 / 43 |
+| Median time per answer (same GPU) | 2.3 s | 14.7 s |
+| Median length | 172 words | 195 words |
 
-A first run of the same evaluation gave 21/26 for the student and 16/26 for the teacher, so the pass counts vary by a few between runs. These scores were measured before the check also required every procedure of a combined plan to be named; the 33 kept answers that did not are being regenerated with the rest, and the student will be retrained and re-scored. The student does better than the teacher on the full check because it only learned from answers that passed it. Its failures are left-out key results, not wrong numbers.
+The student does better than the teacher on the full check because it only learned from answers that passed it; most of its failures are a left-out key result, which the local answer path then states by code. An earlier student, trained on 260 answers before the procedure rule, passed 22 of 26 held-out questions (21 in a repeat), so pass counts vary by a few between runs.
 
-- **Limits:** the student sometimes describes only part of a combined plan (for P022 it explained turbinate reduction but not the valve repair that the recommended plan also includes), and some answers repeat a list. Its procedure descriptions inherit the unreviewed reference card. The remaining 112 questions can be generated later (`build` resumes) and the student retrained.
+- **Limits:** some answers repeat a list, and one held-out answer used a number outside the facts (the local answer path would replace it). The procedure descriptions inherit the unreviewed reference card.
 
 ### Surgeon agent
 
