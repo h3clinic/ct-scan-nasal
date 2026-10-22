@@ -242,7 +242,7 @@ def evaluate(path: Path, model: str, system: str = STUDENT_SYSTEM, base_url: str
 
     client = OpenAI(base_url=base_url, api_key="ollama")
     rows = [r for r in map(json.loads, Path(path).open(encoding="utf-8")) if r["split"] == split]
-    passed, seconds, words = 0, [], []
+    passed, no_invented, seconds, words = 0, 0, [], []
     for r in rows:
         start = time.time()
         text = client.chat.completions.create(
@@ -251,10 +251,24 @@ def evaluate(path: Path, model: str, system: str = STUDENT_SYSTEM, base_url: str
         seconds.append(time.time() - start)
         words.append(len(text.split()))
         passed += not check_answer(text, facts_of(r))
+        no_invented += not agents.unsupported_numbers(text, facts_of(r), METHOD_NUMBERS)
     n = len(rows)
-    return {"model": model, "questions": n, "number_check_passed": passed,
+    return {"model": model, "questions": n, "number_check_passed": passed, "no_invented_numbers": no_invented,
             "median_seconds": round(sorted(seconds)[n // 2], 2) if n else None,
             "median_words": sorted(words)[n // 2] if n else None}
+
+
+def key_numbers(facts: dict) -> str:
+    """The results an answer must state, written by code: the total, each what-if, the recommended plan."""
+    p = facts["prediction"]
+    lines = [f"Total nasal resistance is {p['total_resistance']} Pa*s/cm^3 (left {p['left_resistance']}, "
+             f"right {p['right_resistance']}) in OpenFOAM."]
+    for w in facts.get("what_if", []):
+        lines.append(f"With {w['label']}, it goes from {w['total_resistance_before']} to {w['total_resistance_after']} "
+                     f"({w['total_change_pct']}%).")
+    if facts.get("surgery"):
+        lines.append(f"Recommended: {facts['surgery']['recommended_result']}.")
+    return " ".join(lines)
 
 
 SURGERY_WORDS = ("surg", "procedure", "operat", "plan", "treat", "option", "recommend", "alternativ", "fix")
@@ -263,7 +277,9 @@ SURGERY_WORDS = ("surg", "procedure", "operat", "plan", "treat", "option", "reco
 def answer_locally(question: str, pid: str, patients, flow, client=None, model: str = STUDENT_MODEL,
                    base_url: str = OLLAMA_URL) -> dict:
     """Answer without any hosted model: code picks the tools from the question, the distilled student writes
-    the answer, and the number check guards it (one retry, then a summary written by code)."""
+    the answer, and the number check guards it. An answer whose numbers are all right but that leaves out a key
+    result gets those results stated first by code; one with a wrong number is retried once, then replaced by
+    a summary written by code."""
     start = time.time()
     tools, steps = agents.Tools(patients=patients, flow=flow), []
     try:
@@ -300,6 +316,9 @@ def answer_locally(question: str, pid: str, patients, flow, client=None, model: 
         steps.append(f"number check: {'passed' if not problem else 'failed'}")
         if not problem:
             summary = text.strip()
+            break
+        if not agents.unsupported_numbers(text, facts, METHOD_NUMBERS):  # only key results missing
+            summary, source = key_numbers(facts) + "\n\n" + text.strip(), "distilled Qwen, key numbers stated by code"
             break
         messages += [{"role": "assistant", "content": text},
                      {"role": "user", "content": f"Your answer had problems: {problem}. Rewrite it."}]

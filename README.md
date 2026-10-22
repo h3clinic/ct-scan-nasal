@@ -48,7 +48,7 @@ The agent count stays at four: more agents mostly add latency and failure points
 | Decision rules (standard and improved) | Plain Python functions | **Prototype**: `nasal.decision` (tubes) and `nasal.decision.patient` (real airways, verified in OpenFOAM); thresholds are placeholders pending ENT review |
 | Comparison and logging | pandas + JSON agent log | **Done**: `nasal-agents --log` |
 | Demo | Gradio + Plotly | **Done**: `nasal.demo`, `nasal-demo` |
-| Local explainer (distilled Qwen) | Qwen2.5-14B teacher in Ollama (Docker), LoRA on Qwen2.5-1.5B (PyTorch, PEFT) | **In progress**: `nasal.distill`, `nasal-distill`, `scripts/distill_train.py`; training data being generated, student not trained yet |
+| Local explainer (distilled Qwen) | Qwen2.5-14B teacher in Ollama (Docker), LoRA on Qwen2.5-1.5B (PyTorch, PEFT) | **First version**: `nasal.distill`, `nasal-distill`, `scripts/distill_train.py`; `nasal-explainer` (0.99 GB) in Ollama; see Local explainer |
 | Studio (CT to surgery in one app) | Gradio + Plotly, OpenFOAM in Docker | **First version**: `nasal.studio`, `nasal-studio`; see Studio |
 | Language model | OpenAI API (`openai` Python client), key from Settings or `OPENAI_API_KEY` | **Done**: see Agents usage |
 
@@ -278,7 +278,7 @@ One window, laid out like the [VOCO](https://github.com/h3clinic/VOCO) desktop a
 - **Virtual surgery:** tick turbinate reduction, valve repair or septoplasty, see the voxels each one adds, then run OpenFOAM on the plan or on all 7 plans. The table ranks the plans by OpenFOAM's resistance drop and marks the standard rule's pick.
 - **Faster local runs:** app runs stop at 900 iterations instead of 3000 and use up to 8 cores each, two cases at a time on a 20-core machine (`--procs`, `--iterations`). In the 13 stored 3000-iteration patient runs, total flow at iteration 600 was already within 0.11% of the final value, and P022 run this way matched its stored run within 0.22% in every region in 237 s.
 - **Settings** (top right): paste an OpenAI API key and press **Use key**. It stays in the app's memory for that browser session; tick **Remember on this computer** to keep it in the operating system's credential store (Windows Credential Manager, through `keyring`), never in a file. **Test** checks the key with OpenAI and **Forget** removes it. The panel also sets the OpenAI model, whether earlier questions are sent as context, and OpenFOAM's cores per case, cases at once and iterations (900, or 3000 to match the stored runs), and checks that Docker is running.
-- **Answers from** (Settings): **OpenAI agents**, or **Local distilled Qwen (no API)**, where code picks the tools from the question and the distilled student writes the answer on this computer (see Local explainer). The local option needs the trained `nasal-explainer` model in Ollama, which does not exist yet.
+- **Answers from** (Settings): **OpenAI agents**, or **Local distilled Qwen (no API)**, where code picks the tools from the question and the distilled student writes the answer on this computer (see Local explainer). The local option needs the `nasal-explainer` model in Ollama; nothing is sent off the computer.
 - **Agents:** the console sends a question to the four agents, which read the same OpenFOAM results and can start the same runs as the app. They run on OpenAI's API only, with the key from Settings (or `OPENAI_API_KEY`) and the model set there (default `gpt-4.1-mini`, or `NASAL_OPENAI_MODEL`), with `store=False`. Earlier questions are kept as context only in the app's memory for that browser session, and **Clear** forgets them. Only the patient id, the question and computed numbers are sent, never the CT. Under OpenAI's API policy that data is not used for training, but it may be kept up to 30 days for abuse monitoring unless the organization has zero data retention. If OpenAI refuses a request (no credits, a bad key, an unknown model), the console says so in plain words.
 
 ### Agents
@@ -298,23 +298,45 @@ For a real patient (`nasal-agents "Patient P022: which surgery?"`), resistance, 
 
 The predictions for synthetic cases use `data/surrogate.pt` when it exists and the formula otherwise; the Critic flags which one was used. The agent tests use a scripted stand-in for the model and need no server.
 
-### Local explainer (distilled Qwen, in progress)
+### Local explainer (distilled Qwen)
 
 A small model that writes the answers on this computer, without an API: it explains the exact numbers, what they mean in practice, the procedures and how they are generally performed, each procedure's result in the model, consequences and alternatives. Numbers still come from code.
 
 - **Teacher:** Qwen2.5-14B-Instruct (4-bit, `qwen2.5:14b-instruct-q4_K_M`) in Ollama, run in Docker with the GPU:
 
   ```bash
-  docker run -d --gpus all --name nasal-ollama -p 127.0.0.1:11434:11434 -v nasal-ollama:/root/.ollama ollama/ollama:0.12.6
+  docker run -d --gpus all --name nasal-ollama -p 127.0.0.1:11434:11434 -v nasal-ollama:/root/.ollama \
+    -v "$PWD/data/distill/student/merged:/models/nasal-explainer:ro" -v "$PWD/scripts:/models/scripts:ro" ollama/ollama:0.12.6
   docker exec nasal-ollama ollama pull qwen2.5:14b-instruct-q4_K_M
   nasal-distill build --per-bundle 2
   ```
 
 - **Data:** 221 fact bundles from the agents' tools: 125 patients' OpenFOAM results, the 12 surgery patients' plan options, and each of their 84 plans before and after. Every bundle also carries comparisons computed by code (median over all simulated patients, this patient's percentile, the harder side and by how much, the highest-resistance region). Each bundle gets 2 questions. A teacher answer is kept only if every number in it is in the facts and it quotes the key results (the Explainer's number check), with two retries; 15 patients are held out for testing. `build` resumes where it stopped and writes `data/distill/examples.jsonl`.
 - **Procedure knowledge:** the teacher gets a short reference card on turbinate reduction, valve repair and septoplasty (techniques, risks, non-surgical alternatives) written from general textbook knowledge. It has not been reviewed by an ENT, so the procedure descriptions need that review before anyone relies on them.
-- **Student:** Qwen2.5-1.5B-Instruct, fine-tuned with LoRA on the teacher's answers (`nasal-distill student-data`, then `scripts/distill_train.py` in a separate CUDA environment). It runs with a short prompt instead of the teacher's long one, and is meant to be packed as a 4-bit `nasal-explainer` model in Ollama.
-- **Local answers:** `nasal.distill.answer_locally` picks the tools from the question in code (the patient's OpenFOAM result; the named procedure's before and after; all plans when the question is about surgery), asks the student, applies the number check with one retry, and falls back to the code template.
-- **Status:** the tooling and tests are done and the training data is being generated. The student has not been trained, so there are no student results yet. `nasal-distill eval` will report the number-check pass rate, speed and length on the held-out questions for the teacher and the student.
+- **Student:** Qwen2.5-1.5B-Instruct, fine-tuned with LoRA (rank 16, 3 epochs) on the teacher's answers in a separate CUDA environment, then packed as a 4-bit model in Ollama. It runs with a 173-character prompt instead of the teacher's 2,700-character one, because it learned the rules and the procedure knowledge from the answers:
+
+  ```bash
+  nasal-distill student-data
+  python scripts/distill_train.py --data data/distill/student.jsonl --out data/distill/student --max-len 3072
+  docker exec nasal-ollama ollama create nasal-explainer -q q4_K_M -f /models/scripts/nasal-explainer.Modelfile
+  nasal-distill eval
+  ```
+
+- **Local answers:** `nasal.distill.answer_locally` picks the tools from the question in code (the patient's OpenFOAM result; the named procedure's before and after; all plans when the question is about surgery) and asks the student. An answer whose numbers are all right but that leaves out a key result gets those results stated first by code; one with a wrong number is retried once and then replaced by the code template.
+
+**Results.** The build was stopped after 330 of 442 questions: 286 answers passed the check and 44 were dropped (most from the single-plan questions of the last surgery patients). The student trained on 260 of them in 19 minutes on an RTX 5070 Laptop GPU (12 GB); the held-out loss went from 1.103 to 0.454. On the 26 held-out questions (15 patients the student never saw), each model answering once:
+
+| | Student `nasal-explainer` (Qwen2.5-1.5B) | Teacher (Qwen2.5-14B) |
+| --- | --- | --- |
+| Size (4-bit) | 0.99 GB | 9.0 GB |
+| Passes the full number check | 22 / 26 | 13 / 26 |
+| No number outside the facts | 26 / 26 | 26 / 26 |
+| Median time per answer (same GPU) | 1.9 s | 12.0 s |
+| Median length | 142 words | 187 words |
+
+A first run of the same evaluation gave 21/26 for the student and 16/26 for the teacher, so the pass counts vary by a few between runs. The student does better than the teacher on the full check because it only learned from answers that passed it. Its failures are left-out key results, not wrong numbers.
+
+- **Limits:** the student sometimes describes only part of a combined plan (for P022 it explained turbinate reduction but not the valve repair that the recommended plan also includes), and some answers repeat a list. Its procedure descriptions inherit the unreviewed reference card. The remaining 112 questions can be generated later (`build` resumes) and the student retrained.
 
 ## Surgical decision rules (Workflow++ prototype)
 

@@ -53,6 +53,16 @@ def mean_loss(model, rows, pad, device) -> float:
     return total / max(count, 1)
 
 
+def keep_top_level_rope(config_path: Path) -> None:
+    """Newer transformers save rope_theta only under rope_parameters. Ollama's converter reads the top-level key;
+    without it the model gets a RoPE base of 0 and produces garbage, so copy it up."""
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    rope = config.get("rope_parameters") or {}
+    if "rope_theta" not in config and "rope_theta" in rope:
+        config["rope_theta"] = rope["rope_theta"]
+        config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=Path, default=Path("data/distill/examples.jsonl"))
@@ -104,6 +114,7 @@ def main() -> None:
     merged = model.merge_and_unload()
     merged.save_pretrained(args.out / "merged", safe_serialization=True)
     tokenizer.save_pretrained(args.out / "merged")
+    keep_top_level_rope(args.out / "merged" / "config.json")
     (args.out / "train_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
 

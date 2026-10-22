@@ -70,3 +70,19 @@ def test_local_answer_without_openfoam_says_so():
     patients = pd.DataFrame([{"patient": "P001", "total_resistance": float("nan")}])
     out = distill.answer_locally("q", "P001", patients, PatientFlow(patients, None), client=NS())
     assert out["summary_source"] == "code" and "No OpenFOAM result" in out["summary"]
+
+
+def test_ollama_modelfile_uses_the_student_prompt():
+    text = (Path(__file__).parents[1] / "scripts" / "nasal-explainer.Modelfile").read_text(encoding="utf-8")
+    assert f'SYSTEM """{distill.STUDENT_SYSTEM}"""' in text
+
+
+def test_missing_key_numbers_are_stated_by_code_but_wrong_ones_are_not_kept():
+    _, patients, surgery = _tools_for()
+    flow = PatientFlow(patients, surgery)
+    vague = ScriptedClient([reply(content="Turbinate reduction shrinks the turbinates through the nostrils.")])
+    out = distill.answer_locally("How is turbinate reduction done?", "P003", patients, flow, client=vague)
+    assert out["summary_source"] == "distilled Qwen, key numbers stated by code"
+    assert out["summary"].startswith("Total nasal resistance is 0.3 Pa*s/cm^3") and "0.268" in out["summary"]
+    assert out["summary"].endswith("through the nostrils.") and len(vague.requests) == 1
+    assert distill.check_answer(out["summary"], out["facts"]) == ""
