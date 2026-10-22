@@ -53,7 +53,10 @@ SURGEON_PROMPT = (
     "nasal resistance with the least surgery, where it matters for this patient. Work like this: call "
     "airway_status to see where the resistance sits (by side and region); call technique_info before using a "
     "technique you have not used; operate with the smallest change that targets the main resistance; call "
-    "simulate to check the result in OpenFOAM; undo operations that do not help; try at most a few plans, since "
+    "simulate to check the result in OpenFOAM; undo operations that do not help. If the region that held the "
+    "most resistance still does after a simulation, operate on it again or deeper (depth 2 or 3) before adding "
+    "shallow cuts elsewhere; widen with region choana is the only operation that reaches the choana. Try at most "
+    "a few plans, since "
     "each simulation takes minutes. Finish with finish_surgery naming the state to keep. Never state numbers "
     "yourself: every number comes from the tools."
 )

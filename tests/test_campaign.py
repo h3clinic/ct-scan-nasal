@@ -59,7 +59,9 @@ def test_a_weak_plan_is_retried_with_feedback_and_past_lessons(tmp_path):
     row = campaign.run_case(CASE, executor, client, "m", tmp_path / "cases", experience, base=base, log=lambda m: None)
     assert [a["success"] for a in row["attempts"]] == [False, True]
     second_goal = next(r for r in client.requests if "Earlier attempt 1" in r["messages"][1]["content"])
-    assert "Similar solved cases" in second_goal["messages"][1]["content"]
+    text = second_goal["messages"][1]["content"]
+    assert "Past attempts on similar airways" in text and "worked" in text and "fell short" in text
+    assert "highest regional resistances" in text
 
 
 def test_unsolvable_case_stops_after_the_attempt_limit(tmp_path):

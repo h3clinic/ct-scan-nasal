@@ -119,7 +119,7 @@ def drop_pct(before: dict, after: dict) -> float:
 
 
 class Experience:
-    """Every attempt, kept on disk; similar solved cases are retrieved by `features`."""
+    """Every attempt, kept on disk; similar cases are retrieved by `features`, solved ones first."""
 
     def __init__(self, path: Path):
         self.path = path
@@ -130,17 +130,31 @@ class Experience:
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row) + "\n")
 
-    def similar(self, feats: np.ndarray, k: int = 3) -> list[dict]:
-        solved = [r for r in self.rows if r.get("success")]
-        solved.sort(key=lambda r: float(np.linalg.norm(np.array(r["features"]) - feats)))
-        return solved[:k]
+    def similar(self, feats: np.ndarray, k: int = 3, k_failed: int = 2) -> list[dict]:
+        """The k nearest solved attempts and the k_failed nearest attempts that fell short."""
+        dist = lambda r: float(np.linalg.norm(np.array(r["features"]) - feats))  # noqa: E731
+        solved = sorted((r for r in self.rows if r.get("success")), key=dist)[:k]
+        failed = sorted((r for r in self.rows if not r.get("success")), key=dist)[:k_failed]
+        return solved + failed
 
 
 def lessons(similar: list[dict]) -> str:
+    """Past attempts on similar airways, as the agent sees them: what worked and what fell short."""
     if not similar:
         return ""
-    lines = [f"- a case where {r['summary']}: kept {json.dumps(r['operations'])}, {r['drop_pct']}% lower" for r in similar]
-    return "Similar solved cases (plans that worked there; check yours in OpenFOAM):\n" + "\n".join(lines)
+    lines = []
+    for r in similar:
+        verdict = "worked" if r.get("success") else f"fell short (at least {r['best_known_pct']}% was reachable)"
+        lines.append(f"- a case where {r['summary']}: {json.dumps(r['operations'])} gave {r['drop_pct']}% lower and {verdict}")
+    return "Past attempts on similar airways (check your own plan in OpenFOAM):\n" + "\n".join(lines)
+
+
+def diagnosis(before: dict, after: dict) -> str:
+    """Where the resistance sits after a plan, and how each region changed: written by code for the feedback."""
+    ranked = sorted(((s, r) for s in SIDES for r in REGIONS), key=lambda sr: -after[f"{sr[0]}_{sr[1]}_resistance"])
+    parts = [f"{s} {r} {after[f'{s}_{r}_resistance']:.4f} ({100 * (after[f'{s}_{r}_resistance'] / before[f'{s}_{r}_resistance'] - 1):+.0f}%)"
+             for s, r in ranked[:4]]
+    return "After that plan the highest regional resistances (Pa*s/cm^3, change from before) were: " + "; ".join(parts) + "."
 
 
 def describe(record: dict) -> str:
@@ -198,9 +212,11 @@ def run_case(case: mutations.Case, execute: Executor, client, model: str, work: 
         log(f"{case.case_id} attempt {attempt}: {drop:.1f}% lower, best known {best_known:.1f}% -> {'success' if success else 'retry'}")
         if success:
             break
+        kept = session.simulated[session.key()]
         feedback = (f"Earlier attempt {attempt} kept {json.dumps(out['result']['operations'])} for {drop:.1f}% lower. "
                     f"At least {best_known:.1f}% is reachable with the approved techniques; aim for "
-                    f"{SUCCESS_SHARE * best_known:.1f}% or more. Look again at where the resistance sits.")
+                    f"{SUCCESS_SHARE * best_known:.1f}% or more. {diagnosis(before, kept)} Work on the regions that "
+                    f"still hold the most resistance, deeper if needed.")
     return {"case_id": case.case_id, "base_patient": case.base_patient, "pathologies": [p.__dict__ for p in applied],
             "before_total": round(before["total_resistance"], 4), "oracle_operations": oracle,
             "oracle_drop_pct": oracle_drop, "best_known_pct": best_known, "attempts": attempts,
