@@ -168,6 +168,26 @@ No constants have been fitted yet.
 
 It underpredicts the most obstructed sides (about 2.6 Pa·s/cm³ in OpenFOAM, predicted about 0.34). The agents therefore use OpenFOAM results for real patients, not this surrogate; the demo's instant what-if sliders still use it.
 
+## Smooth walls and label repair (in progress)
+
+The voxel airways have stair-stepped walls (the scans are 0.59 x 0.59 mm in-plane but 1.5 mm between slices). `nasal.smooth` builds smooth-walled airways for OpenFOAM:
+
+- **Smooth surface from the labels:** the airway's signed distance is Gaussian-smoothed (0.75 mm), shifted so the airway keeps its voxel volume, and Taubin-smoothed; the nostril and outlet openings stay flat, at the same cuts as the voxel case. The surface is meshed with snappyHexMesh (0.8 mm cells, 0.4 mm at the wall, 0.2 mm at the openings) and region resistances are read from cutting planes at the same region boundaries as `anatomy.read_patient`. P022: 346,300 cells, 17 minutes on 8 cores at 900 iterations (the voxel case: 72,575 cells, about 2.5 minutes).
+- **Surface from the CT:** optionally the wall is where the lightly smoothed CT crosses -500 HU (halfway between air and soft tissue), within 2 voxels of the labeled airway and without the sinuses.
+- **CT-guided label repair** (`repair_labels`): unlabeled voxels below -300 HU within 2 voxels of the airway join it, with the nearest airway label; sinus labels are never changed.
+
+**What P022 showed.** Total resistance (left choana in brackets), Pa·s/cm³, 900 iterations:
+
+| | Expert labels | CT-repaired labels | CT wall at -500 HU |
+| --- | --- | --- | --- |
+| Voxel walls | 0.2633 (0.914) | 0.1491 (0.114) | |
+| Smooth walls | 0.1302 (0.139) | 0.1059 (0.111) | left cavity not connected |
+
+- The expert label joins P022's left cavity to the nasopharynx through only 21 voxel faces (18.5 mm²; the right side: 122 faces, 107 mm²), while 95% of the 277 unlabeled voxels between them are below -300 HU (median -856 HU). The voxel model's left choana resistance comes from that labeling, not from a narrow choana in the CT at -300 HU.
+- At -500 HU the left cavity does not reach the nasopharynx at all, so the opening is a slit at the limit of the CT's resolution: whether it is closed, tight or open depends on where the wall is drawn.
+- Over the 125 simulated patients, how much a cavity's label touches the nasopharynx label correlates with its voxel choana resistance (Spearman -0.54 left, -0.59 right); P022 (left), P064 (both sides) and P011 (right) touch over fewer than 50 voxels.
+- The repair at -300 HU adds a rim of partly-air voxels around the whole airway (9,201 voxels, 13% more airway for P022), not only the gaps, and smoothing lowers resistance further (stair-stepped walls add friction). Which wall position matches real noses cannot be settled without measured airflow (rhinomanometry) for these patients, so the stored results, the surrogate and the surgery study still use the expert voxel labels.
+
 ## CT to airway (no expert labels)
 
 Everything above starts from NasalSeg's expert-drawn labels. `nasal.segment` starts from the raw CT instead, so a new patient's scan can enter the pipeline. Its output is a label volume in the same convention (3 right cavity, 4 left, 5 nasopharynx), so the cuts, meshing and OpenFOAM run on it unchanged. The input has to be a CT volume (a stack of slices); a single 2D image cannot give a 3D airway.

@@ -125,21 +125,26 @@ boundaryField
 def case_files(processes: int = 8, turbulence: str = "kOmegaSST", max_iterations: int = MAX_ITERATIONS,
                inlets: tuple[str, ...] = ("inlet",), sample_planes: bool = True,
                mesh_commands: list[str] | None = None, write_format: str = "binary",
-               reconstruct: bool = False) -> dict[str, str]:
+               reconstruct: bool = False, planes: list[tuple[str, tuple, tuple]] | None = None) -> dict[str, str]:
     """OpenFOAM case dictionaries and run script, keyed by relative path.
 
     The defaults build the idealized tube case from a gmsh mesh. Patient
     airways (`nasal.anatomy`) pass their own inlet patches and mesh commands,
-    skip the plane sampling, and keep the full fields in ASCII.
+    skip the plane sampling, and keep the full fields in ASCII. `planes` replaces
+    the tube's x-planes with named cutting planes (name, point, normal) in meters,
+    as the smooth patient airways use (`nasal.smooth`).
     """
     if turbulence not in TURBULENCE:
         raise ValueError(f"turbulence must be one of {TURBULENCE}")
     rans = turbulence != "laminar"
     p0 = REFERENCE_PRESSURE / AIR_DENSITY  # simpleFoam pressure is kinematic
     ramp = min(RAMP_ITERATIONS, max_iterations // 3)
+    if planes is None:
+        planes = [(f"x{i}", (xb, 0, 0), (1, 0, 0)) for i, xb in enumerate(region_boundaries(), start=1)]
     planes = "\n".join(
-        f"            x{i} {{ type cuttingPlane; point ({xb:.6g} 0 0); normal (1 0 0); interpolate false; }}"
-        for i, xb in enumerate(region_boundaries(), start=1)
+        f"            {name} {{ type cuttingPlane; point ({pt[0]:.8g} {pt[1]:.8g} {pt[2]:.8g}); "
+        f"normal ({nv[0]} {nv[1]} {nv[2]}); interpolate false; }}"
+        for name, pt, nv in planes
     )
     inlet_key = inlets[0] if len(inlets) == 1 else '"(' + "|".join(inlets) + ')"'
     field = lambda *args: _field(*args, inlet_key=inlet_key)  # noqa: E731
