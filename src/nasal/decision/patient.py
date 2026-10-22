@@ -107,6 +107,54 @@ def apply_patient_plan(tags: np.ndarray, cuts: dict, spacing: np.ndarray, plan: 
     return tags
 
 
+# ---- parametric operations, for the surgeon agent (nasal.surgeon)
+
+TECHNIQUES = ("turbinate_reduction", "valve_repair", "septoplasty", "widen")
+REGION_NAMES = ("vestibule", "valve", "turbinate", "choana")
+DIRECTIONS = {"lateral", "vertical", "all"}
+MAX_DEPTH = 3  # voxel layers per operation (about 0.6 mm each); a modeling limit, not a surgical one
+
+
+def _directions(side: str, direction: str) -> list[tuple[int, int]]:
+    lateral = [(0, LATERAL[side])]
+    vertical = [(2, 1), (2, -1)]
+    return {"lateral": lateral, "vertical": vertical, "all": [(0, 1), (0, -1), *vertical]}[direction]
+
+
+def operate(tags: np.ndarray, cuts: dict, spacing: np.ndarray, technique: str, side: str = "both",
+            depth: int = 1, region: str | None = None, direction: str | None = None) -> np.ndarray:
+    """One virtual operation with chosen side and depth (voxel layers), on top of whatever was done before.
+
+    turbinate_reduction and valve_repair act like the fixed procedures above, on one side or both; septoplasty
+    moves the septum `depth` layers toward the wider side; widen opens one region of one or both cavities in a
+    chosen direction (a general cut). Raises ValueError for arguments outside these choices."""
+    if technique not in TECHNIQUES:
+        raise ValueError(f"technique must be one of {TECHNIQUES}")
+    if side not in (*SIDES, "both"):
+        raise ValueError("side must be left, right or both")
+    if not isinstance(depth, int) or not 1 <= depth <= MAX_DEPTH:
+        raise ValueError(f"depth must be a whole number of layers from 1 to {MAX_DEPTH}")
+    sides = SIDES if side == "both" else (side,)
+    if technique == "septoplasty":
+        for _ in range(depth):
+            tags = septoplasty(tags, cuts, spacing)
+    else:
+        if technique == "widen":
+            if region not in REGION_NAMES:
+                raise ValueError(f"widen needs region, one of {REGION_NAMES}")
+            if direction not in DIRECTIONS:
+                raise ValueError(f"widen needs direction, one of {sorted(DIRECTIONS)}")
+            regions, how = (region,), direction
+        else:
+            regions, how = (("turbinate",), "lateral") if technique == "turbinate_reduction" else (("valve",), "all")
+        for _ in range(depth):
+            for s in sides:
+                tags = _grow(tags, cuts, s, regions, _directions(s, how))
+    tags = tags.copy()
+    tags[~anatomy._largest_component(tags > 0)] = 0
+    return tags
+
+
 def candidate_plans() -> list[tuple[str, ...]]:
     return [c for k in range(1, len(PATIENT_PROCEDURES) + 1) for c in combinations(PATIENT_PROCEDURES, k)]
 

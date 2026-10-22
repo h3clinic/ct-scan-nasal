@@ -95,3 +95,39 @@ def test_every_plan_leaves_one_connected_airway():
     for plan in ps.candidate_plans():
         out = ps.apply_patient_plan(tags, cuts, SPACING, plan)
         assert ndimage.label(out > 0)[1] == 1, plan
+
+
+def test_parametric_operation_matches_the_fixed_procedure_at_one_layer():
+    tags, cuts = airway()
+    fixed = ps.turbinate_reduction(tags, cuts, SPACING)
+    fixed[~anatomy._largest_component(fixed > 0)] = 0
+    assert np.array_equal(ps.operate(tags, cuts, SPACING, "turbinate_reduction"), fixed)
+
+
+def test_operation_side_and_depth():
+    tags, cuts = airway()
+    right = ps.operate(tags, cuts, SPACING, "turbinate_reduction", side="right")
+    added = (right > 0) & (tags == 0)
+    assert added.any() and (right[added] == R).all()
+    one = ps.operate(tags, cuts, SPACING, "valve_repair", depth=1)
+    two = ps.operate(tags, cuts, SPACING, "valve_repair", depth=2)
+    assert (two > 0).sum() > (one > 0).sum() > (tags > 0).sum()
+
+
+def test_widen_cuts_one_region_in_a_chosen_direction():
+    tags, cuts = airway()
+    names = anatomy.region_names(tags)
+    out = ps.operate(tags, cuts, SPACING, "widen", side="left", region="choana", direction="vertical")
+    added = np.argwhere((out > 0) & (tags == 0))
+    assert len(added) and (out[tuple(added.T)] == L).all()
+    choana_ys = np.argwhere(names == "left_choana")[:, 1]
+    assert added[:, 1].min() >= choana_ys.min() and added[:, 0].min() >= np.argwhere(names == "left_choana")[:, 0].min()
+
+
+@pytest.mark.parametrize("kwargs", [{"technique": "laser"}, {"technique": "valve_repair", "depth": 4},
+                                    {"technique": "valve_repair", "side": "middle"}, {"technique": "widen"},
+                                    {"technique": "widen", "region": "valve", "direction": "diagonal"}])
+def test_operation_rejects_choices_outside_the_tools(kwargs):
+    tags, cuts = airway()
+    with pytest.raises(ValueError):
+        ps.operate(tags, cuts, SPACING, **kwargs)

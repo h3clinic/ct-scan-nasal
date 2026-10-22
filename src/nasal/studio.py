@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import agents, anatomy, demo, distill, settings
+from . import agents, anatomy, demo, distill, providers, settings, surgeon
 from .decision import patient as ps
 from .params import REGIONS, SIDES
 from .patient_flow import _RUN_ID, FAST_ITERATIONS, WORK_DIR, PatientFlow, run_openfoam
@@ -92,6 +92,16 @@ def airway_figure(surface: dict, title: str, result: dict | None = None, changes
     if changes:
         fig.update_layout(showlegend=True, legend={"x": 0, "y": 1})
     return fig
+
+
+def surgeon_label(op: dict) -> str:
+    """'valve repair (both, 1 layer)' for an operation the surgeon agent applied (or undid)."""
+    if "undo" in op:
+        return "undo " + surgeon_label(op["undo"])
+    where = op.get("region", "")
+    depth = op.get("depth", 1)
+    extra = f" {where} {op.get('direction', '')}".rstrip() if where else ""
+    return f"{op['technique'].replace('_', ' ')}{extra} ({op.get('side', 'both')}, {depth} layer{'s' if depth > 1 else ''})"
 
 
 def summary(result: dict) -> str:
@@ -374,6 +384,19 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
     def plan_all(st, choices):
         yield from simulate_plans(st, choices, True)
 
+    def llm(prefs) -> dict:
+        """The language model this browser session uses: provider, key, model, address; raises if no key."""
+        name = prefs.get("provider") or providers.DEFAULT
+        spec = providers.PROVIDERS[name]
+        key = prefs.get("api_key") or (os.environ.get("OPENAI_API_KEY") if name == "OpenAI" else None)
+        if not key:
+            raise gr.Error("add an API key in Settings (top right), or switch Answers from to the local model there")
+        model = prefs.get("model") or (agents.OPENAI_MODEL if name == "OpenAI" else spec.default_model)
+        base_url = prefs.get("base_url") or spec.base_url
+        if not base_url:
+            raise gr.Error("a custom provider needs its API address in Settings")
+        return {"provider": name, "api_key": key, "model": model, "base_url": base_url}
+
     def ask(pid, question, memory, log, prefs):
         if not question.strip():
             raise gr.Error("type a question first")
@@ -381,20 +404,89 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         if prefs.get("answers_from") == "Local distilled Qwen (no API)":
             yield from ask_local(pid, question, memory, log)
             return
-        key = prefs.get("api_key") or os.environ.get("OPENAI_API_KEY")
-        if not key:
-            raise gr.Error("add your OpenAI API key in Settings (top right), or switch to the local model there")
-        model_name = prefs.get("openai_model") or agents.OPENAI_MODEL
-        steps = {"role": "system", "text": "Running…", "meta": model_name}
+        model = llm(prefs)
+        steps = {"role": "system", "text": "Running…", "meta": f"{model['provider']} · {model['model']}"}
         history = memory if prefs.get("remember_questions", True) else None
-        for steps_md, answer_md in demo.ask_agents(pid, question, patients, flow, history=history,
-                                                   api_key=key, model=model_name):
+        for steps_md, answer_md in demo.ask_agents(pid, question, patients, flow, history=history, **model):
             steps["text"] = " · ".join(line.strip("-_ ").replace("**", "").replace("`", "")
                                        for line in steps_md.splitlines() if line.strip()) or "Running…"
             shown = [*log, steps] + ([{"role": "agents", "text": answer_md, "meta": "agents"}] if answer_md else [])
             yield console_html(shown), shown, memory, "", (f"{len(memory)} earlier question(s) in memory"
                                                            if history is not None else "Session memory is off.")
         # the final yield above already holds the answer; keep it as the new log
+
+    def agent_operate(st, goal, prefs, log):
+        """The surgeon agent operates on the open airway; every cut and every OpenFOAM result is drawn as it happens."""
+        import queue
+        import threading
+
+        from openai import OpenAI
+
+        if not st:
+            raise gr.Error("open an airway first")
+        model = llm(prefs)
+        events = queue.Queue()
+        baseline = openfoam_results(st).get("none")
+
+        def simulate_fn(tags):
+            case_dir = WORK_DIR / st["name"] / f"agent_{next(_RUN_ID)}"
+            return run_openfoam(tags, st["spacing"], st["origin"], st["cuts"], case_dir, flow.procs, flow.iterations)
+
+        session = surgeon.SurgerySession(st["name"], st["tags"], st["cuts"], st["spacing"], st["origin"], simulate_fn,
+                                         baseline=baseline, listener=lambda event, data: events.put(("session", event, data)))
+        client = OpenAI(api_key=model["api_key"], base_url=model["base_url"])
+        out = {}
+
+        def work():
+            try:
+                out["result"] = surgeon.run_surgeon(session, goal or "lower the resistance with the least surgery", client,
+                                                    model["model"], model["provider"],
+                                                    listener=lambda step: events.put(("step", step["kind"], step)))
+            except Exception as err:  # shown in the console
+                out["error"] = agents.explain_error(f"{type(err).__name__}: {err}")
+            events.put(("done", None, None))
+
+        threading.Thread(target=work, daemon=True).start()
+        log = [*log, {"role": "you", "text": f"{st['name']} · surgeon agent · {goal}", "meta": "you"}]
+        lines = []
+        steps = {"role": "system", "text": "The surgeon agent is starting…", "meta": f"{model['provider']} · {model['model']}"}
+
+        def frame(status_text):
+            before = session.simulated.get(session.key([]))
+            after = session.simulated.get(session.key())
+            ops = ", ".join(surgeon_label(h["operation"]) for h in session.history) or "no operation yet"
+            changes = changed_voxels(session.original, session.tags, st["spacing"], st["origin"])
+            surface = demo.tags_surface(session.tags, st["spacing"], st["origin"])
+            title = f"{st['name']} · agent: {ops}" + (f" · OpenFOAM {after['total_resistance']:.3f} Pa·s/cm³" if after else " · not simulated")
+            table = region_table(before, after) if (before and after and session.history) else (region_table(after) if after else None)
+            info = (f"**Surgeon agent:** {ops}. {len(changes['added']):,} voxels added, {len(changes['removed']):,} removed. "
+                    f"OpenFOAM runs: {session.runs}.")
+            steps["text"] = " · ".join(lines[-8:]) or steps["text"]
+            shown = [*log, steps]
+            return (plot_theme(airway_figure(surface, title, after, changes)), table, gr.update(), info, status_text,
+                    console_html(shown), shown)
+
+        yield frame("Surgeon agent working…")
+        while True:
+            source, kind, data = events.get()
+            if source == "done":
+                break
+            if source == "step" and kind == "tool":
+                lines.append(f"{data['name']}" + (" (rejected)" if isinstance(data.get("result"), dict) and "error" in data["result"] else ""))
+                continue
+            if source == "session" and kind == "simulating":
+                yield frame(f"OpenFOAM running on the agent's airway ({flow.procs} cores, {flow.iterations} iterations)…")
+            elif source == "session" and kind in ("operate", "simulated", "finished"):
+                yield frame("Surgeon agent working…")
+        if "error" in out:
+            final = {"role": "agents", "text": f"**Surgeon agent failed:** {out['error']}", "meta": "surgeon"}
+        else:
+            res = out["result"]
+            final = {"role": "agents", "text": demo.as_markdown(res["summary"]) + f"\n\n_{res['seconds']} s · {res['summary_source']}_",
+                     "meta": "surgeon"}
+        *view, _, _, shown = frame(ready_text())
+        shown = [*shown, final]
+        yield (*view, ready_text(), console_html(shown), shown)
 
     def ask_local(pid, question, memory, log):
         """Code picks the tools, the distilled student writes the answer; nothing leaves this computer."""
@@ -419,10 +511,13 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         log = gr.State([])
         prefs = gr.State({})  # this browser session's agent settings, including the OpenAI key
         with gr.Sidebar(label="Settings", open=False, position="right", width=330, elem_id="settings") as settings_bar:
-            gr.HTML('<div class="section-head"><span>Agents</span></div>')
+            gr.HTML('<div class="section-head"><span>Language model</span></div>')
             key_status = gr.Markdown(elem_classes="note")
-            key_box = gr.Textbox(label="OpenAI API key", type="password", placeholder="Paste your key (sk-…)",
-                                 max_lines=1)
+            key_box = gr.Textbox(label="API key (OpenAI, Claude, Gemini, OpenRouter, …)", type="password",
+                                 placeholder="Paste your key", max_lines=1)
+            provider_pick = gr.Dropdown(list(providers.PROVIDERS), value=providers.DEFAULT, label="Provider (set from the key)")
+            model_box = gr.Textbox(value=agents.OPENAI_MODEL, label="Model", max_lines=1)
+            base_url_box = gr.Textbox(label="API address (custom provider only)", placeholder="https://…/v1", max_lines=1)
             remember_key = gr.Checkbox(value=False, interactive=settings.can_remember(),
                                        label="Remember on this computer (Windows Credential Manager)"
                                        if settings.can_remember() else "Remember on this computer (needs keyring)")
@@ -430,11 +525,11 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
                 use_key = gr.Button("Use key", variant="primary", min_width=60)
                 test_key = gr.Button("Test", elem_classes="signal", min_width=60)
                 forget_key = gr.Button("Forget", elem_classes="signal", min_width=60)
-            answers_from = gr.Radio(["OpenAI agents", "Local distilled Qwen (no API)"], value="OpenAI agents", label="Answers from")
-            openai_model = gr.Textbox(value=agents.OPENAI_MODEL, label="OpenAI model", max_lines=1)
+            answers_from = gr.Radio(["Cloud agents (API key)", "Local distilled Qwen (no API)"], value="Cloud agents (API key)", label="Answers from")
             remember_questions = gr.Checkbox(value=True, label="Send earlier questions of this session as context")
             gr.Markdown("The key stays in this app's memory for your browser session, and in the credential store "
-                        "only if you tick Remember. It is sent only to OpenAI and never shown in full.", elem_classes="note")
+                        "only if you tick Remember. It is sent only to that provider and never shown in full.",
+                        elem_classes="note")
             gr.HTML('<div class="section-head"><span>OpenFOAM</span></div>')
             cores = gr.Slider(1, max_cores, value=flow.procs, step=1, label="Cores per case")
             at_once = gr.Slider(1, max_cores, value=flow.parallel, step=1, label="Cases at once")
@@ -477,19 +572,21 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
                         sim_btn = gr.Button("Run airflow on plan", elem_classes="signal")
                         all_btn = gr.Button("Run all 7 plans", elem_classes="signal")
                         reset_btn = gr.Button("Show original airway", elem_classes="signal")
+                        gr.HTML('<div class="section-head"><span>Surgeon agent</span></div>')
+                        goal = gr.Textbox(value="Lower the resistance with the least surgery", label="Goal", lines=2)
+                        surgeon_btn = gr.Button("Let the agent operate", variant="primary", elem_classes="signal")
                 with gr.Column(elem_id="console"):
                     gr.HTML('<div class="pane-title"><span>Console · agents</span><span>memory stays in this session</span></div>')
                     messages = gr.HTML(console_html([]))
                     with gr.Row(elem_id="composer"):
                         question = gr.Textbox(placeholder="Ask the agents, e.g. which plan lowers resistance most and why?",
                                               show_label=False, scale=5, container=False)
-                        provider = gr.Markdown(elem_classes="note", elem_id="model-label")
+                        model_label = gr.Markdown(elem_classes="note", elem_id="model-label")
                         send = gr.Button("Send", variant="primary", scale=0, min_width=70)
                         clear = gr.Button("Clear", scale=0, min_width=70, elem_classes="signal")
                     memory_info = gr.Markdown("Only the patient id, your question and computed numbers are sent to the "
-                                              "model, never the CT. OpenAI requests use store=False; OpenAI may still keep "
-                                              "them up to 30 days for abuse monitoring unless your organization has zero "
-                                              "data retention.", elem_classes="note")
+                                              "model, never the CT. OpenAI requests use store=False; what any provider keeps "
+                                              "is set by its own data policy.", elem_classes="note")
 
         view_out = [plot, table, ranking, info]
         build.click(reconstruct, [pid, upload, source], [state, *view_out, status])
@@ -502,47 +599,66 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         for trigger in (send.click, question.submit):
             trigger(ask, [pid, question, memory, log, prefs], [messages, log, memory, question, memory_info])
         clear.click(lambda: (console_html([]), [], [], "Session memory cleared."), None, [messages, log, memory, memory_info])
+        surgeon_btn.click(agent_operate, [state, goal, prefs, log], [*view_out, status, messages, log])
 
         # ---- settings
+        def default_model(name: str) -> str:
+            return agents.OPENAI_MODEL if name == "OpenAI" else providers.PROVIDERS[name].default_model
+
         def key_text(prefs) -> str:
+            name = prefs.get("provider") or providers.DEFAULT
             if prefs.get("api_key"):
                 where = "saved on this computer" if prefs.get("saved") else "for this session"
-                return f"OpenAI key {settings.mask(prefs['api_key'])}, {where}."
-            if os.environ.get("OPENAI_API_KEY"):
+                return f"{name} key {settings.mask(prefs['api_key'])}, {where}."
+            if name == "OpenAI" and os.environ.get("OPENAI_API_KEY"):
                 return f"OpenAI key {settings.mask(os.environ['OPENAI_API_KEY'])} from the OPENAI_API_KEY variable."
-            return "No OpenAI key yet: paste one below and press Use key."
+            return "No API key yet: paste one below and press Use key."
 
         def model_text(prefs) -> str:
             if prefs.get("answers_from") == "Local distilled Qwen (no API)":
                 return f"Local · {distill.STUDENT_MODEL}"
-            if prefs.get("api_key") or os.environ.get("OPENAI_API_KEY"):
-                return f"OpenAI · {prefs.get('openai_model') or agents.OPENAI_MODEL}"
+            name = prefs.get("provider") or providers.DEFAULT
+            if prefs.get("api_key") or (name == "OpenAI" and os.environ.get("OPENAI_API_KEY")):
+                return f"{name} · {prefs.get('model') or default_model(name)}"
             return "No key: open ⚙ Settings"
 
         def load_prefs():
-            saved = settings.load_saved_key()
-            prefs = {"api_key": saved, "saved": bool(saved), "remember_questions": True}
-            return prefs, key_text(prefs), model_text(prefs)
+            saved = settings.load_saved() or {}
+            name = saved.get("provider") or providers.DEFAULT
+            prefs = {"api_key": saved.get("key"), "saved": bool(saved), "provider": name, "base_url": saved.get("base_url"),
+                     "model": default_model(name), "remember_questions": True, "answers_from": "Cloud agents (API key)"}
+            return prefs, key_text(prefs), model_text(prefs), name, prefs["model"], saved.get("base_url") or ""
 
-        def set_key(text, remember, prefs):
+        def set_key(text, remember, chosen, model, base_url, prefs):
             key = (text or "").strip()
-            if not settings.looks_like_key(key):
-                raise gr.Error("That does not look like an OpenAI key (it starts with sk-).")
-            saved = remember and settings.save_key(key)
-            prefs = {**prefs, "api_key": key, "saved": bool(saved)}
+            custom = chosen == "Custom (OpenAI-compatible)"
+            if not key or any(c.isspace() for c in key) or (not custom and not settings.looks_like_key(key)):
+                raise gr.Error("That does not look like an API key.")  # a local custom server may take any word
+            detected = providers.detect(key)
+            name = chosen if detected == "Custom (OpenAI-compatible)" else detected
+            if model in ("", default_model(prefs.get("provider") or providers.DEFAULT)):
+                model = default_model(name)  # follow the provider unless the user typed a model
+            saved = remember and settings.save(key, name, base_url or None)
+            prefs = {**prefs, "api_key": key, "saved": bool(saved), "provider": name, "model": model,
+                     "base_url": base_url or None}
             note = "" if saved or not remember else " Could not save it on this computer; it is kept for this session."
-            return prefs, key_text(prefs) + note, "", model_text(prefs)
+            return prefs, key_text(prefs) + note, "", model_text(prefs), name, model
 
         def check_key(prefs):
             key = prefs.get("api_key") or os.environ.get("OPENAI_API_KEY")
             if not key:
                 raise gr.Error("add a key first")
-            return key_text(prefs) + " " + settings.test_key(key)[1]
+            return key_text(prefs) + " " + settings.test_key(key, prefs.get("provider") or providers.DEFAULT,
+                                                             prefs.get("base_url"))[1]
 
         def drop_key(prefs):
-            settings.forget_saved_key()
+            settings.forget_saved()
             prefs = {**prefs, "api_key": None, "saved": False}
             return prefs, key_text(prefs), model_text(prefs)
+
+        def pick_provider(name, prefs):
+            prefs = {**prefs, "provider": name, "model": default_model(name)}
+            return prefs, prefs["model"], model_text(prefs), key_text(prefs)
 
         def set_pref(name):
             return lambda value, prefs: {**prefs, name: value}
@@ -554,17 +670,20 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
                     if flow.procs * flow.parallel > max_cores else "")
             return ready_text(), ready_text() + "." + note
 
-        app.load(load_prefs, None, [prefs, key_status, provider])
+        app.load(load_prefs, None, [prefs, key_status, model_label, provider_pick, model_box, base_url_box])
         open_settings.click(lambda: gr.Sidebar(open=True), None, [settings_bar])
-        use_key.click(set_key, [key_box, remember_key, prefs], [prefs, key_status, key_box, provider])
-        key_box.submit(set_key, [key_box, remember_key, prefs], [prefs, key_status, key_box, provider])
+        key_inputs = [key_box, remember_key, provider_pick, model_box, base_url_box, prefs]
+        key_outputs = [prefs, key_status, key_box, model_label, provider_pick, model_box]
+        use_key.click(set_key, key_inputs, key_outputs)
+        key_box.submit(set_key, key_inputs, key_outputs)
         test_key.click(check_key, [prefs], [key_status])
-        forget_key.click(drop_key, [prefs], [prefs, key_status, provider])
-        for comp, name in ((openai_model, "openai_model"), (remember_questions, "remember_questions"),
+        forget_key.click(drop_key, [prefs], [prefs, key_status, model_label])
+        provider_pick.input(pick_provider, [provider_pick, prefs], [prefs, model_box, model_label, key_status])
+        for comp, name in ((model_box, "model"), (base_url_box, "base_url"), (remember_questions, "remember_questions"),
                            (answers_from, "answers_from")):
             comp.change(set_pref(name), [comp, prefs], [prefs])
-        answers_from.change(lambda value, p: model_text({**p, "answers_from": value}), [answers_from, prefs], [provider])
-        openai_model.change(lambda p: model_text(p), [prefs], [provider])
+        for comp in (answers_from, model_box):
+            comp.change(lambda p: model_text(p), [prefs], [model_label])
         apply_foam.click(apply_openfoam, [cores, at_once, iters], [status, docker_info])
         check_docker.click(lambda: settings.docker_status(IMAGE), None, [docker_info])
     return app

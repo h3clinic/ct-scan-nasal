@@ -65,7 +65,9 @@ SYSTEM = (
     "describe how a procedure is performed, give the general steps as found in standard ENT references and say "
     "that the surgeon decides the technique. Say when a result comes from the model rather than from real patients. "
     "A negative drop means resistance goes up: say 'raises resistance', not a negative drop. Surgical risks and "
-    "what the model does not include (not_modeled) are different things; list them separately. "
+    "what the model does not include (not_modeled) are different things; list them separately. When a plan "
+    "combines procedures (for example turbinate reduction + valve repair), describe each procedure in it, not "
+    "only the first. "
 ) + PROCEDURE_NOTES
 
 # The student learns the rules and the procedure knowledge from the teacher's answers, so it runs with a short
@@ -158,11 +160,22 @@ def split_patients(pids: list[str], seed: int = 0) -> set[str]:
 METHOD_NUMBERS = (0.6, 90.0, 3000.0, 900.0)  # mm per procedure layer, the 90% rule, solver iterations
 
 
+PROCEDURE_WORDS = {"turbinate reduction": "turbinate", "valve repair": "valve", "septoplasty": "septoplasty"}
+
+
+def missing_procedures(text: str, facts: dict) -> list[str]:
+    """Procedures of the what-if plans that the answer never names (a combined plan must be described whole)."""
+    named = {p for w in facts.get("what_if", []) for p in w["label"].split(" + ") if p in PROCEDURE_WORDS}
+    return sorted(p for p in named if PROCEDURE_WORDS[p] not in text.lower())
+
+
 def check_answer(text: str, facts: dict) -> str:
-    """'' when the answer passes the number checks, else what is wrong."""
+    """'' when the answer passes the number checks and names every procedure of the plan, else what is wrong."""
     bad, missing = agents.unsupported_numbers(text, facts, METHOD_NUMBERS), agents.missing_numbers(text, facts)
+    left_out = missing_procedures(text, facts)
     return "; ".join(filter(None, [bad and f"numbers not in the JSON: {', '.join(bad)}",
-                                   missing and f"missing required results: {', '.join(missing)}"]))
+                                   missing and f"missing required results: {', '.join(missing)}",
+                                   left_out and f"the plan also includes {', '.join(left_out)}; describe it too"]))
 
 
 def teacher_answer(client, facts: dict, question: str, model: str = TEACHER_MODEL) -> tuple[str | None, int]:

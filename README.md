@@ -1,6 +1,6 @@
 # Nasal0
 
-A prototype for evaluating nasal airway obstruction. It builds airway geometries (parametric tubes, and real patient airways from CT), estimates airflow resistance by region, and wraps the tools in an agent loop on OpenAI's API that explains the results. Physics and decision rules are plain code, never a language model, so every number traces back to a formula or a simulation.
+A prototype for evaluating nasal airway obstruction. It builds airway geometries (parametric tubes, and real patient airways from CT), estimates airflow resistance by region, and wraps the tools in agents that explain the results and plan virtual surgery, on any OpenAI-compatible model API (OpenAI by default). Physics and decision rules are plain code, never a language model, so every number traces back to a formula or a simulation.
 
 ## At a glance
 
@@ -8,7 +8,8 @@ Built for the NVIDIA x Red Hat Small Models Hack; see [SUBMISSION.md](SUBMISSION
 
 - **Real anatomy:** 130 NasalSeg CT airways, 126 simulated in OpenFOAM on NVIDIA Brev (median nasal resistance 0.146 Pa·s/cm³ at 150 Pa).
 - **Fast surrogate:** under 0.2 ms per prediction, 16.3% mean side error (cross-validated) against 29.9% for "average patient".
-- **Four agents** on OpenAI's API (default `gpt-4.1-mini`, `store=False`). Code validates every tool call, and every number the Explainer writes is checked against the tool results. For real patients, every number the agents report comes from OpenFOAM. Their reliability on OpenAI has not been measured yet (`nasal-agents --eval`).
+- **Surgeon agent:** operates on a patient's CT airway with parametric virtual surgery (side, region, depth), checks each candidate in OpenFOAM, undoes what does not help, and shows every change live in the studio.
+- **Four agents** on OpenAI's API by default (`gpt-4.1-mini`, `store=False`), or Anthropic, Google Gemini, OpenRouter or any OpenAI-compatible endpoint. Code validates every tool call, and every number the Explainer writes is checked against the tool results. For real patients, every number the agents report comes from OpenFOAM. Their reliability on OpenAI has not been measured yet (`nasal-agents --eval`).
 - **Virtual surgery, verified in OpenFOAM:** on 10 obstructed real airways, Workflow++ reached the best plan's drop for 10 of 10, the standard rule for 1 of 10.
 - **Data:** every simulated result (125 patients, 96 surgery runs, 106 idealized airways, surrogates) is in [dataset/](dataset/README.md), CC BY 4.0.
 - **Apps:** `nasal-studio`, CT to airway, OpenFOAM, virtual surgery and agents in one window; `nasal-demo`, a 3D resistance map of a real patient with what-if sliders and live agent steps.
@@ -22,7 +23,7 @@ pytest
 
 ### Agents
 
-All four agents run on one OpenAI model through OpenAI's API, `gpt-4.1-mini` by default (set it in the studio's Settings, with `--model`, or with `NASAL_OPENAI_MODEL`). OpenAI does not publish its models' sizes. Requests are sent with `store=False`, and only the patient id, the question and computed numbers are sent, never a CT. Each agent has its own instructions and may call only its own tools.
+All four agents run on one model through an OpenAI-compatible API: OpenAI's `gpt-4.1-mini` by default (set it in the studio's Settings, with `--model`, or with `NASAL_OPENAI_MODEL`), or a provider picked in the studio's Settings (`nasal.providers`: Anthropic, Google Gemini, OpenRouter or a custom address; the provider is detected from the pasted key). The providers do not publish their models' sizes. Requests to OpenAI are sent with `store=False`; what other providers keep is set by their own data policies, and only the patient id, the question and computed numbers are sent, never a CT. Each agent has its own instructions and may call only its own tools.
 
 | Agent | Model | Tools it may call | Job |
 | --- | --- | --- | --- |
@@ -30,6 +31,8 @@ All four agents run on one OpenAI model through OpenAI's API, `gpt-4.1-mini` by 
 | Planner | OpenAI (`gpt-4.1-mini`) | `predict_resistance`, `formula_resistance`, `what_if`, `patient_resistance`, `recommend_surgery`, `patient_what_if`, `patient_surgery_options`, `finish` | Decides which physics tools answer the request. For a real patient, every tool reads OpenFOAM: the patient's own run, one procedure plan's run, or all 7 plans for surgery questions (stored runs, or new runs with `--live` and in the studio) |
 | Critic | OpenAI (`gpt-4.1-mini`) | `review_results`, `check_parameters`, `report_flags` | Runs the code checks and picks which flags to show; it can cite only flag ids the checks produced |
 | Explainer | OpenAI (`gpt-4.1-mini`) | none | Writes the plain-language summary; code rejects any number not in the tool results and retries once, then falls back to a template written by code |
+
+| Surgeon (separate, `nasal.surgeon`) | same provider | `airway_status`, `technique_info`, `operate`, `undo`, `simulate`, `finish_surgery` | Operates on a real CT airway with the parametric techniques, runs OpenFOAM on each candidate (at most 6 runs) and keeps the best verified airway; it may not finish before checking at least one operation in OpenFOAM |
 
 The agent count stays at four: more agents mostly add latency and failure points. Surgery questions go through the decision rules in `nasal.decision`: `recommend_surgery` runs the final-stage recommender on a synthetic case, and `patient_surgery_options` applies the same Workflow++ rule, technique reasons and dominant-region check to a real CT airway, using OpenFOAM's result for each plan (`nasal.patient_flow`). The rule thresholds are placeholders until an ENT reviews them.
 
@@ -277,7 +280,8 @@ One window, laid out like the [VOCO](https://github.com/h3clinic/VOCO) desktop a
 - **Airflow:** every resistance shown comes from OpenFOAM: the stored run where one exists, otherwise **Run airflow** starts one in Docker. The patient surrogate is not used here, because on some airways it is off by more than 30% (P022: 0.141 against OpenFOAM's 0.263 Pa·s/cm³).
 - **Virtual surgery:** tick turbinate reduction, valve repair or septoplasty, see the voxels each one adds, then run OpenFOAM on the plan or on all 7 plans. The table ranks the plans by OpenFOAM's resistance drop and marks the standard rule's pick.
 - **Faster local runs:** app runs stop at 900 iterations instead of 3000 and use up to 8 cores each, two cases at a time on a 20-core machine (`--procs`, `--iterations`). In the 13 stored 3000-iteration patient runs, total flow at iteration 600 was already within 0.11% of the final value, and P022 run this way matched its stored run within 0.22% in every region in 237 s.
-- **Settings** (top right): paste an OpenAI API key and press **Use key**. It stays in the app's memory for that browser session; tick **Remember on this computer** to keep it in the operating system's credential store (Windows Credential Manager, through `keyring`), never in a file. **Test** checks the key with OpenAI and **Forget** removes it. The panel also sets the OpenAI model, whether earlier questions are sent as context, and OpenFOAM's cores per case, cases at once and iterations (900, or 3000 to match the stored runs), and checks that Docker is running.
+- **Settings** (top right): paste an API key from OpenAI, Anthropic (Claude), Google Gemini or OpenRouter and press **Use key**; the provider is detected from the key, and a custom OpenAI-compatible address (for example a local Ollama server) can be set instead. It stays in the app's memory for that browser session; tick **Remember on this computer** to keep it in the operating system's credential store (Windows Credential Manager, through `keyring`), never in a file. **Test** checks the key with OpenAI and **Forget** removes it. The panel also sets the OpenAI model, whether earlier questions are sent as context, and OpenFOAM's cores per case, cases at once and iterations (900, or 3000 to match the stored runs), and checks that Docker is running.
+- **Surgeon agent** (Commands): type a goal and press **Let the agent operate**. The agent reads where the resistance sits, operates with the parametric techniques below, runs OpenFOAM on its airway, undoes what does not help and finishes with a verified result. The 3D view redraws after every cut (added air in green) and is recolored after every OpenFOAM run; the console lists each tool call and ends with the agent's summary, which passes the number check or is replaced by a code summary.
 - **Answers from** (Settings): **OpenAI agents**, or **Local distilled Qwen (no API)**, where code picks the tools from the question and the distilled student writes the answer on this computer (see Local explainer). The local option needs the `nasal-explainer` model in Ollama; nothing is sent off the computer.
 - **Agents:** the console sends a question to the four agents, which read the same OpenFOAM results and can start the same runs as the app. They run on OpenAI's API only, with the key from Settings (or `OPENAI_API_KEY`) and the model set there (default `gpt-4.1-mini`, or `NASAL_OPENAI_MODEL`), with `store=False`. Earlier questions are kept as context only in the app's memory for that browser session, and **Clear** forgets them. Only the patient id, the question and computed numbers are sent, never the CT. Under OpenAI's API policy that data is not used for training, but it may be kept up to 30 days for abuse monitoring unless the organization has zero data retention. If OpenAI refuses a request (no credits, a bad key, an unknown model), the console says so in plain words.
 
@@ -334,9 +338,18 @@ A small model that writes the answers on this computer, without an API: it expla
 | Median time per answer (same GPU) | 1.9 s | 12.0 s |
 | Median length | 142 words | 187 words |
 
-A first run of the same evaluation gave 21/26 for the student and 16/26 for the teacher, so the pass counts vary by a few between runs. The student does better than the teacher on the full check because it only learned from answers that passed it. Its failures are left-out key results, not wrong numbers.
+A first run of the same evaluation gave 21/26 for the student and 16/26 for the teacher, so the pass counts vary by a few between runs. These scores were measured before the check also required every procedure of a combined plan to be named; the 33 kept answers that did not are being regenerated with the rest, and the student will be retrained and re-scored. The student does better than the teacher on the full check because it only learned from answers that passed it. Its failures are left-out key results, not wrong numbers.
 
 - **Limits:** the student sometimes describes only part of a combined plan (for P022 it explained turbinate reduction but not the valve repair that the recommended plan also includes), and some answers repeat a list. Its procedure descriptions inherit the unreviewed reference card. The remaining 112 questions can be generated later (`build` resumes) and the student retrained.
+
+### Surgeon agent
+
+`nasal.surgeon.run_surgeon` lets a language model plan and perform virtual surgery on one patient's CT airway; the studio runs it from **Let the agent operate**. The model only chooses tool calls:
+
+- **Techniques** (`nasal.decision.patient.operate`): `turbinate_reduction` (lateral wall of the turbinate region), `valve_repair` (valve region sideways and vertically), `septoplasty` (septum toward the wider side) and `widen` (a general cut of one region: vestibule, valve, turbinate or choana; lateral, vertical or all directions). Each takes a side (left, right or both) and a depth of 1 to 3 voxel layers (about 0.6 mm each). These sizes are modeling choices, not surgical prescriptions; the operations never cross the septum or the nostril and outlet cuts.
+- **Checks:** every candidate is run in OpenFOAM (the studio's settings: 900 iterations by default; at most 6 runs per session). The agent may not finish before checking at least one operation, and its final airway is always simulated. Its summary passes the number check or is replaced by a summary written by code.
+- **Technique notes:** `technique_info` returns the same general textbook summary as the distillation card (techniques, risks); no ENT has reviewed it. The agent does not search the literature.
+- **First run:** on P022 with the local Qwen2.5-14B (as a custom provider through Ollama) and two OpenFOAM runs, the agent tried a left turbinate reduction (0.2633 to 0.2618 Pa·s/cm³), added a right valve repair (0.2524, 4.2% lower than before surgery) and finished with a summary that passed the number check, in 413 s. It did not target the left choana, which holds most of that side's resistance and which only the general `widen` cut can reach. A second run from the studio's **Let the agent operate**, same model and patient, chose turbinate reduction on both sides (0.2633 to 0.2403 Pa·s/cm³, 8.8% lower; 2 OpenFOAM runs, 509 s), redrawing the airway after each cut and recoloring it after each run. In an earlier run, before the rule that at least one operation must be checked, the same model finished without operating.
 
 ## Surgical decision rules (Workflow++ prototype)
 

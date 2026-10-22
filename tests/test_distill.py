@@ -86,3 +86,11 @@ def test_missing_key_numbers_are_stated_by_code_but_wrong_ones_are_not_kept():
     assert out["summary"].startswith("Total nasal resistance is 0.3 Pa*s/cm^3") and "0.268" in out["summary"]
     assert out["summary"].endswith("through the nostrils.") and len(vague.requests) == 1
     assert distill.check_answer(out["summary"], out["facts"]) == ""
+
+
+def test_a_combined_plan_must_be_described_whole():
+    facts = {"prediction": {"total_resistance": 0.2633},
+             "what_if": [{"label": "turbinate reduction + valve repair", "total_resistance_after": 0.2263}]}
+    partial = "Total 0.2633, then 0.2263 after turbinate reduction."
+    assert "valve repair" in distill.check_answer(partial, facts)
+    assert distill.check_answer(partial + " The valve repair widens the front of the nose.", facts) == ""
