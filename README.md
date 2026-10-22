@@ -371,6 +371,23 @@ The student does better than the teacher on the full check because it only learn
 - **Technique notes:** `technique_info` returns the same general textbook summary as the distillation card (techniques, risks); no ENT has reviewed it. The agent does not search the literature.
 - **First run:** on P022 with the local Qwen2.5-14B (as a custom provider through Ollama) and two OpenFOAM runs, the agent tried a left turbinate reduction (0.2633 to 0.2618 Pa·s/cm³), added a right valve repair (0.2524, 4.2% lower than before surgery) and finished with a summary that passed the number check, in 413 s. It did not target the left choana, which holds most of that side's resistance and which only the general `widen` cut can reach. A second run from the studio's **Let the agent operate**, same model and patient, chose turbinate reduction on both sides (0.2633 to 0.2403 Pa·s/cm³, 8.8% lower; 2 OpenFOAM runs, 509 s), redrawing the airway after each cut and recoloring it after each run. In an earlier run, before the rule that at least one operation must be checked, the same model finished without operating.
 
+### Surgeon-agent campaign (in progress)
+
+Thousands of synthetic problem airways, each solved by the surgeon agent and checked in OpenFOAM (`nasal.mutations`, `nasal.campaign`):
+
+```bash
+nasal-campaign generate --n 1000 --seed 0              # data/campaign/cases.jsonl
+nasal-campaign run --executor smooth --limit 5 --data nasalseg   # local Docker; --executor ssh --host <name> for a remote machine
+nasal-campaign report
+```
+
+- **Cases:** a real airway (expert labels; the campaign uses the smooth-wall reconstruction) with one to three pathologies of random side and severity: turbinate hypertrophy, valve collapse, septal deviation, choanal narrowing, each 1 to 3 voxel layers. A mutation never closes a side; its severity is lowered instead. Every case is rebuilt exactly from its seed.
+- **Reference:** the oracle plan undoes the generated pathologies with the approved operations (for example turbinate hypertrophy left, 2 layers, is undone by turbinate reduction left, depth 2). The best known drop is the larger of the oracle's and the agent's own best.
+- **Success:** the agent's kept plan reaches 90% of the best known drop (the Workflow++ near-best placeholder). Otherwise it tries again, told what it kept and what is reachable, up to 5 attempts; a case still unsolved is flagged for review.
+- **Learning:** every attempt is kept in `experience.jsonl`; before each case the agent is shown the three most similar solved cases (by each region's share of resistance and the side ratio) and the plans that worked.
+- **Executors:** `smooth` (smooth walls on the expert labels, local Docker), `voxel` (the voxel airway, about 7 times faster, for trying the loop out) and `ssh` (the smooth case run on a remote machine with Docker; not yet run against a real machine). Results are appended as cases finish, so a stopped campaign resumes.
+- **Status:** the generator, the runner and their tests are done; no campaign has been run yet. A smooth case needs 2 OpenFOAM runs (problem airway and oracle) plus the agent's runs, at about 17 minutes each on 8 local cores, so thousands of cases need remote machines.
+
 ## Surgical decision rules (Workflow++ prototype)
 
 `nasal.decision` compares the standard visual rule with a map-driven rule, scored by virtual surgery. Thresholds are **placeholders, not clinical values**, and no ENT has reviewed them yet.
