@@ -187,9 +187,10 @@ def run_case(case: mutations.Case, execute: Executor, client, model: str, work: 
         oracle_tags = ps.operate(oracle_tags, cuts, spacing, **op)
     oracle_drop = drop_pct(before, sim(oracle_tags)) if oracle else 0.0
     feats = features(before)
-    best_known, attempts, feedback = oracle_drop, [], ""
+    best_known, attempts, feedback, history = oracle_drop, [], "", []
     for attempt in range(1, max_attempts + 1):
         session = surgeon.SurgerySession(case.case_id, tags, cuts, spacing, origin, sim, baseline=before)
+        session.tried_before = {h["key"]: h["drop"] for h in history}
         goal = "Lower the resistance as much as the approved techniques allow, with the least surgery."
         goal += ("\n" + lessons(experience.similar(feats))) if experience.rows else ""
         goal += ("\n" + feedback) if feedback else ""
@@ -213,10 +214,13 @@ def run_case(case: mutations.Case, execute: Executor, client, model: str, work: 
         if success:
             break
         kept = session.simulated[session.key()]
-        feedback = (f"Earlier attempt {attempt} kept {json.dumps(out['result']['operations'])} for {drop:.1f}% lower. "
+        history.append({"key": session.key(), "drop": round(drop, 1), "operations": out["result"]["operations"]})
+        earlier = "\n".join(f"- attempt {i}: {json.dumps(h['operations'])} -> {h['drop']}% lower"
+                             for i, h in enumerate(history, start=1))
+        feedback = (f"Earlier attempts on this airway (do not repeat them):\n{earlier}\n"
                     f"At least {best_known:.1f}% is reachable with the approved techniques; aim for "
                     f"{SUCCESS_SHARE * best_known:.1f}% or more. {diagnosis(before, kept)} Work on the regions that "
-                    f"still hold the most resistance, deeper if needed.")
+                    f"still hold the most resistance, with the operation that acts on each, deeper if needed.")
     return {"case_id": case.case_id, "base_patient": case.base_patient, "pathologies": [p.__dict__ for p in applied],
             "before_total": round(before["total_resistance"], 4), "oracle_operations": oracle,
             "oracle_drop_pct": oracle_drop, "best_known_pct": best_known, "attempts": attempts,

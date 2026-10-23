@@ -55,7 +55,9 @@ SURGEON_PROMPT = (
     "technique you have not used; operate with the smallest change that targets the main resistance; call "
     "simulate to check the result in OpenFOAM; undo operations that do not help. If the region that held the "
     "most resistance still does after a simulation, operate on it again or deeper (depth 2 or 3) before adding "
-    "shallow cuts elsewhere; widen with region choana is the only operation that reaches the choana. Try at most "
+    "shallow cuts elsewhere. Which operation acts on which region: valve -> valve_repair; turbinate -> "
+    "turbinate_reduction; choana or vestibule -> widen with that region; a septum pushed toward one side -> "
+    "septoplasty (it can also raise resistance, so check it). Operate on the side where the resistance is. Try at most "
     "a few plans, since "
     "each simulation takes minutes. Finish with finish_surgery naming the state to keep. Never state numbers "
     "yourself: every number comes from the tools."
@@ -86,6 +88,7 @@ class SurgerySession:
         self.results: dict = {}
         self.runs = 0  # OpenFOAM runs made in this session
         self.finished: dict | None = None
+        self.tried_before: dict[str, float] = {}  # plan key -> % drop, from earlier attempts on the same case
 
     def key(self, history: list[dict] | None = None) -> str:
         return json.dumps([h["operation"] for h in (self.history if history is None else history)], sort_keys=True)
@@ -174,6 +177,9 @@ class SurgerySession:
         return out
 
     def finish_surgery(self, args: dict, force: bool = False) -> dict:
+        if not force and self.key() in self.tried_before:
+            raise ToolError(f"this exact plan was kept in an earlier attempt ({self.tried_before[self.key()]}% lower); "
+                            "change it: another technique, side, region or depth")
         tried = bool(self.history) or any(k != self.key([]) for k in self.simulated)  # an operated plan gets simulated below
         if not tried and not force:
             raise ToolError("check at least one operation in OpenFOAM before finishing: operate, then simulate "

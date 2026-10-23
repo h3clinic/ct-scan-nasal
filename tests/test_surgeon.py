@@ -104,3 +104,17 @@ def test_finishing_without_trying_anything_is_refused():
     s.simulate({})
     s.undo({})
     assert s.finish_surgery({})["operations"] == []  # tried, undone: keeping no surgery is allowed
+
+
+def test_a_plan_kept_in_an_earlier_attempt_cannot_be_kept_again():
+    s = session()
+    s.operate({"technique": "valve_repair"})
+    s.tried_before = {s.key(): 4.2}
+    try:
+        s.finish_surgery({})
+    except surgeon.ToolError as err:
+        assert "earlier attempt (4.2% lower)" in str(err)
+    else:
+        raise AssertionError("kept a repeated plan")
+    s.operate({"technique": "turbinate_reduction", "side": "left"})
+    assert s.finish_surgery({})["operations"][-1]["technique"] == "turbinate_reduction"
