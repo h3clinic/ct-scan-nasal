@@ -42,13 +42,21 @@ def batches(rows: list[dict], size: int, pad: int):
         yield ids, labels, mask
 
 
+def answer_loss(model, ids, labels, mask, device) -> torch.Tensor:
+    """Mean cross-entropy over the answer tokens of one example (batch size 1). The answer is the end of the
+    sequence, so only its logits are computed: the full logits in float32 (151k-token vocabulary) are the
+    largest allocation and ran a 12 GB GPU out of memory. Same value as passing labels to the model."""
+    n = int((labels != -100).sum())
+    logits = model(input_ids=ids.to(device), attention_mask=mask.to(device), logits_to_keep=n + 1).logits
+    return torch.nn.functional.cross_entropy(logits[0, :-1].float(), labels[0, -n:].to(device))
+
+
 def mean_loss(model, rows, pad, device) -> float:
     model.eval()
     total, count = 0.0, 0
     with torch.no_grad():
         for ids, labels, mask in batches(rows, 1, pad):
-            out = model(input_ids=ids.to(device), attention_mask=mask.to(device), labels=labels.to(device))
-            total, count = total + out.loss.item(), count + 1
+            total, count = total + answer_loss(model, ids, labels, mask, device).item(), count + 1
     model.train()
     return total / max(count, 1)
 
@@ -99,7 +107,7 @@ def main() -> None:
         order = torch.randperm(len(data["train"]), generator=torch.Generator().manual_seed(epoch)).tolist()
         train = [data["train"][i] for i in order]
         for step, (ids, labels, mask) in enumerate(batches(train, 1, pad), start=1):
-            loss = model(input_ids=ids.to(device), attention_mask=mask.to(device), labels=labels.to(device)).loss
+            loss = answer_loss(model, ids, labels, mask, device)
             (loss / args.accum).backward()
             if step % args.accum == 0 or step == len(train):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

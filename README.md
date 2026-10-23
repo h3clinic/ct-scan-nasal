@@ -332,35 +332,37 @@ A small model that writes the answers on this computer, without an API: it expla
   docker run -d --gpus all --name nasal-ollama -p 127.0.0.1:11434:11434 -v nasal-ollama:/root/.ollama \
     -v "$PWD/data/distill/student/merged:/models/nasal-explainer:ro" -v "$PWD/scripts:/models/scripts:ro" ollama/ollama:0.12.6
   docker exec nasal-ollama ollama pull qwen2.5:14b-instruct-q4_K_M
-  nasal-distill build --per-bundle 2
+  nasal-distill build --per-bundle 3
   ```
 
-- **Data:** 221 fact bundles from the agents' tools: 125 patients' OpenFOAM results, the 12 surgery patients' plan options, and each of their 84 plans before and after. Every bundle also carries comparisons computed by code (median over all simulated patients, this patient's percentile, the harder side and by how much, the highest-resistance region). Each bundle gets 2 questions. A teacher answer is kept only if every number in it is in the facts and it quotes the key results (the Explainer's number check), with two retries; 15 patients are held out for testing. `build` resumes where it stopped and writes `data/distill/examples.jsonl`.
+- **Data:** 221 fact bundles from the agents' tools: 125 patients' OpenFOAM results, the 12 surgery patients' plan options, and each of their 84 plans before and after. Every bundle also carries comparisons computed by code (median over all simulated patients, this patient's percentile, the harder side and by how much, the highest-resistance region). Each bundle gets all 3 questions of its kind. A teacher answer is kept only if every number in it is in the facts and it quotes the key results (the Explainer's number check), with two retries; 15 patients are held out for testing. `build` resumes where it stopped and writes `data/distill/examples.jsonl`.
 - **Procedure knowledge:** the teacher gets a short reference card on turbinate reduction, valve repair and septoplasty (techniques, risks, non-surgical alternatives) written from general textbook knowledge. It has not been reviewed by an ENT, so the procedure descriptions need that review before anyone relies on them.
 - **Student:** Qwen2.5-1.5B-Instruct, fine-tuned with LoRA (rank 16, 3 epochs) on the teacher's answers in a separate CUDA environment, then packed as a 4-bit model in Ollama. It runs with a 173-character prompt instead of the teacher's 2,700-character one, because it learned the rules and the procedure knowledge from the answers:
 
   ```bash
   nasal-distill student-data
-  python scripts/distill_train.py --data data/distill/student.jsonl --out data/distill/student --max-len 3072
+  python scripts/keep_awake.py -- python scripts/distill_train.py --data data/distill/student.jsonl --out data/distill/student --max-len 3072
   docker exec nasal-ollama ollama create nasal-explainer -q q4_K_M -f /models/scripts/nasal-explainer.Modelfile
   nasal-distill eval
   ```
 
+  Only the answer's logits are computed for the loss: on a 12 GB GPU the full float32 logits (151k-token vocabulary) ran out of memory. Training needs the GPU to itself, so unload the teacher first (`ollama stop`). `scripts/keep_awake.py` keeps Windows from idle-sleeping until the command it wraps exits, without changing power settings.
+
 - **Local answers:** `nasal.distill.answer_locally` picks the tools from the question in code (the patient's OpenFOAM result; the named procedure's before and after; all plans when the question is about surgery) and asks the student. An answer whose numbers are all right but that leaves out a key result gets those results stated first by code; one with a wrong number is retried once and then replaced by the code template.
 
-**Results.** All 442 questions were asked: 402 answers passed the check (which also requires every procedure of a combined plan to be named) and 40 were dropped after three tries. The student trained on the 359 training answers in 22 minutes on an RTX 5070 Laptop GPU (12 GB); the held-out loss went from 1.058 to 0.401. On the 43 held-out questions (15 patients the student never saw), each model answering once:
+**Results.** All 663 questions were asked: 622 answers passed the check (which also requires every procedure of a combined plan to be named) and 41 were dropped after three tries. The student trained on the 555 training answers in 31 minutes on an RTX 5070 Laptop GPU (12 GB); the held-out loss went from 1.046 to 0.358. On the 67 held-out questions (the same 15 patients, never seen in training), each model answering once:
 
-| | Student `nasal-explainer` (Qwen2.5-1.5B) | Teacher (Qwen2.5-14B) |
-| --- | --- | --- |
-| Size (4-bit) | 0.99 GB | 9.0 GB |
-| Passes the full check | 37 / 43 | 27 / 43 |
-| No number outside the facts | 42 / 43 | 41 / 43 |
-| Median time per answer (same GPU) | 2.3 s | 14.7 s |
-| Median length | 172 words | 195 words |
+| | Student `nasal-explainer` (Qwen2.5-1.5B, 555 answers) | Previous student (359 answers) | Teacher (Qwen2.5-14B) |
+| --- | --- | --- | --- |
+| Size (4-bit) | 0.99 GB | 0.99 GB | 9.0 GB |
+| Passes the full check | 56 / 67 | 55 / 67 | 31 / 67 |
+| No number outside the facts | 65 / 67 | 66 / 67 | 61 / 67 |
+| Median time per answer (same GPU) | 2.2 s | 1.9 s | 21.4 s |
+| Median length | 171 words | 164 words | 143 words |
 
-The student does better than the teacher on the full check because it only learned from answers that passed it; most of its failures are a left-out key result, which the local answer path then states by code. An earlier student, trained on 260 answers before the procedure rule, passed 22 of 26 held-out questions (21 in a repeat), so pass counts vary by a few between runs.
+The extra 196 training answers lowered the held-out loss (0.358 on these 67 questions; the previous student reached 0.401 on its 43) but did not change the pass rate beyond run-to-run variation: on the previous 43 held-out questions the new student passed 35 (the previous student 37). The students do better than the teacher on the full check because they only learned from answers that passed it; most of their failures are a left-out key result, which the local answer path then states by code. An earlier student, trained on 260 answers before the procedure rule, passed 22 of 26 held-out questions (21 in a repeat), so pass counts vary by a few between runs.
 
-- **Limits:** some answers repeat a list, and one held-out answer used a number outside the facts (the local answer path would replace it). The procedure descriptions inherit the unreviewed reference card.
+- **Limits:** some answers repeat a list, and 2 of the 67 held-out answers used a number outside the facts (the local answer path would retry, then replace them). The procedure descriptions inherit the unreviewed reference card.
 
 ### Surgeon agent
 

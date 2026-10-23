@@ -94,3 +94,13 @@ def test_a_combined_plan_must_be_described_whole():
     partial = "Total 0.2633, then 0.2263 after turbinate reduction."
     assert "valve repair" in distill.check_answer(partial, facts)
     assert distill.check_answer(partial + " The valve repair widens the front of the nose.", facts) == ""
+
+
+def test_keep_awake_runs_the_command_and_returns_its_exit_code():
+    import subprocess
+    script = Path(__file__).parents[1] / "scripts" / "keep_awake.py"
+    ok = subprocess.run([sys.executable, str(script), "--", sys.executable, "-c", "print('trained')"],
+                        capture_output=True, text=True)
+    assert ok.returncode == 0 and ok.stdout.strip() == "trained"
+    failed = subprocess.run([sys.executable, str(script), sys.executable, "-c", "raise SystemExit(3)"])
+    assert failed.returncode == 3
