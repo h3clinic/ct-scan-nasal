@@ -3,11 +3,13 @@
 Run `nasal-studio --images <NasalSeg images> --labels <NasalSeg labels>`. Every resistance shown
 comes from OpenFOAM: the stored run where one exists (`data/patient_sim.csv`, `data/patient_surgery.csv`),
 otherwise a run started from the app in Docker (a few minutes each, kept for the session and shared with
-the agents through `nasal.patient_flow`). The patient surrogate is not used: on some airways it is off by
-more than 30%. Automatic segmentation needs `data/segment_model.joblib` from `nasal-segment train`. The
+the agents through `nasal.patient_flow`). Runs started here are drawn live while OpenFOAM works (`nasal.live`),
+and the Spectator tab replays every change made to the airway (`nasal.spectator`). The patient surrogate is not
+used: on some airways it is off by more than 30%. Automatic segmentation needs `data/segment_model.joblib` from `nasal-segment train`. The
 agents run on OpenAI's API with the key added in Settings (or OPENAI_API_KEY); the rest works without it.
 """
 
+import json
 import os
 import time
 from pathlib import Path
@@ -15,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import agents, anatomy, demo, distill, providers, settings, surgeon
+from . import agents, anatomy, demo, distill, live, providers, settings, spectator, surgeon
 from .decision import patient as ps
 from .params import REGIONS, SIDES
 from .patient_flow import _RUN_ID, FAST_ITERATIONS, WORK_DIR, PatientFlow, run_openfoam
@@ -264,7 +266,8 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         except ValueError as err:
             raise gr.Error(f"{name}: {err}") from err
         return {"name": name, "how": how, "key": f"{name}:{how}", "tags": tags, "cuts": cuts, "spacing": spacing,
-                "origin": origin, "expert": how == "NasalSeg expert labels"}
+                "origin": origin, "expert": how == "NasalSeg expert labels",
+                "timeline": spectator.Timeline(name, tags, spacing, origin, how)}
 
     def original_view(st):
         """(plot, region table, ranking, info) for the untouched airway."""
@@ -283,48 +286,90 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
 
     def reconstruct(pid, upload, source):
         st = load_airway(pid, upload, source)
+        st["timeline"].add("you", "open", f"opened {st['name']} ({st['how']})", result=openfoam_results(st).get("none"))
         return (st, *original_view(st), ready_text())
 
-    def run_cases(st, jobs: list[tuple[str, np.ndarray]]):
-        """Generator: runs (plan label, tags) cases in parallel, yielding progress text; the last item
-        is None when every case finished, or an error string."""
+    live_surfaces: dict[tuple, dict] = {}  # coarse surfaces for the live view, per airway and plan
+
+    def live_view(st, label, tags, snap, shown: dict):
+        """(airway figure or no update, progress chart, status) for a live snapshot. The 3D figure is resent
+        only when a new field sample arrived (every live.LIVE_EVERY iterations); `shown` remembers the last."""
+        key = (st["key"], label)
+        if key not in live_surfaces:
+            live_surfaces[key] = demo.tags_surface(tags, st["spacing"], st["origin"], step=2)
+        sample = (label, (snap.get("fields") or {}).get("iteration"))
+        name = label.replace("_", " ").replace("+", " + ")
+        figure = gr.update()
+        if sample != shown.get("sample"):
+            shown["sample"] = sample
+            title = f"{st['name']} · {name} · live OpenFOAM, iteration {sample[1] or 0}: wall pressure and air speed"
+            figure = plot_theme(live.wall_figure(live_surfaces[key], snap, title))
+        return figure, plot_theme(live.progress_figure(snap)), f"{name}: {live.status_text(snap)}"
+
+    def run_cases(st, jobs: list[tuple[str, np.ndarray]], actor: str = "you"):
+        """Generator: runs (plan label, tags) cases in parallel. Yields (status text, label, live snapshot) while
+        they run, the case shown being the first one still running; the last item is (None, None, None) when
+        every case finished, or (error text, None, None). Each start and result goes on the airway's timeline."""
         from concurrent.futures import ThreadPoolExecutor
 
-        errors = {}
+        errors, snaps, finished = {}, {}, set()
+        timeline = st["timeline"]
 
         def work(label, tags):
             case_dir = WORK_DIR / st["name"] / f"{label}_{next(_RUN_ID)}"
+            name = label.replace("_", " ").replace("+", " + ")
+            timeline.add(actor, "simulate", f"OpenFOAM started: {name}", tags=tags)
             try:
-                record = run_openfoam(tags, st["spacing"], st["origin"], st["cuts"], case_dir, flow.procs, flow.iterations)
+                record = run_openfoam(tags, st["spacing"], st["origin"], st["cuts"], case_dir, flow.procs, flow.iterations,
+                                      on_progress=lambda snap: snaps.__setitem__(label, snap))
                 if st["expert"]:  # shared with the agents
                     flow.runs[(st["name"], label)] = {**record, "source": f"OpenFOAM run now ({flow.iterations} iterations)"}
                 else:
                     session_runs[(st["key"], label)] = record
+                timeline.add(actor, "result", f"OpenFOAM result: {name}", tags=tags, result=record)
             except Exception as err:  # shown in the UI
                 errors[label] = f"{type(err).__name__}: {str(err).splitlines()[0] if str(err) else ''}"
+                timeline.add(actor, "result", f"OpenFOAM failed: {name}", detail={"error": errors[label]})
+            finished.add(label)
 
         start = time.time()
         with ThreadPoolExecutor(max_workers=flow.parallel) as pool:
             futures = [pool.submit(work, label, tags) for label, tags in jobs]
             while not all(f.done() for f in futures):
-                done = sum(f.done() for f in futures)
-                yield f"OpenFOAM running · {done}/{len(jobs)} cases done · {int(time.time() - start)} s"
-                time.sleep(3)
+                focus = next((label for label, _ in jobs if label in snaps and label not in finished), None)
+                msg = f"OpenFOAM running · {len(finished)}/{len(jobs)} cases done · {int(time.time() - start)} s"
+                yield msg, focus, snaps.get(focus)
+                time.sleep(2)
         if errors:
-            yield "OpenFOAM failed: " + "; ".join(f"{k}: {v}" for k, v in errors.items()) + " (is Docker Desktop running?)"
+            yield "OpenFOAM failed: " + "; ".join(f"{k}: {v}" for k, v in errors.items()) + " (is Docker Desktop running?)", None, None
             return
-        yield None
+        yield None, None, None
+
+    def run_live(st, jobs, wrap):
+        """Runs `jobs` and yields wrap(airway figure, status, live chart) frames while they run (no update where
+        nothing changed). Returns the last status text: None when every case finished, else the error."""
+        shown, tags_of = {}, dict(jobs)
+        for msg, label, snap in run_cases(st, jobs):
+            if msg is None:
+                return None
+            if snap is not None:
+                figure, chart, text = live_view(st, label, tags_of[label], snap, shown)
+                yield wrap(figure, f"{msg} · {text}", chart)
+            else:
+                yield wrap(gr.update(), msg, gr.update())
+            if msg.startswith("OpenFOAM failed"):
+                return msg
+        return None
 
     def simulate_original(st):
         if not st:
             raise gr.Error("open an airway first")
         msg = ready_text()
         if "none" not in openfoam_results(st):
-            for msg in run_cases(st, [("none", st["tags"])]):
-                if msg is not None:
-                    yield (*([gr.update()] * 4), msg)
+            msg = yield from run_live(st, [("none", st["tags"])],
+                                      lambda fig, text, chart: (fig, gr.update(), gr.update(), gr.update(), text, chart))
             msg = msg or ready_text()
-        yield (*original_view(st), msg)
+        yield (*original_view(st), msg, gr.update())
 
     def surgery_view(st, plan):
         tags, cuts, spacing = st["tags"], st["cuts"], st["spacing"]
@@ -355,7 +400,18 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
     def operate(st, choices):
         if not st:
             raise gr.Error("open an airway first")
-        return surgery_view(st, plan_from_choices(choices))
+        view = surgery_view(st, plan_from_choices(choices))
+        name = ps.label(view[0]["plan"]).replace("_", " ").replace("+", " + ")
+        st["timeline"].add("you", "operate", f"applied plan: {name}", tags=view[0]["operated"],
+                           result=openfoam_results(st).get(ps.label(view[0]["plan"])))
+        return view
+
+    def show_original(st):
+        if not st:
+            return [gr.update()] * 4
+        st["timeline"].add("you", "view", "back to the original airway", tags=st["tags"],
+                           result=openfoam_results(st).get("none"))
+        return original_view(st)
 
     def simulate_plans(st, choices, every: bool):
         """OpenFOAM on the original airway and the chosen plan (or every plan), skipping what has results."""
@@ -363,7 +419,7 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
             raise gr.Error("open an airway first")
         plan = plan_from_choices(choices)
         view = surgery_view(st, plan)
-        yield (*view, ready_text())
+        yield (*view, ready_text(), gr.update())
         st = view[0]
         plans = ps.candidate_plans() if every else [plan]
         jobs = [("none", st["tags"])] + [(ps.label(p), st["operated"] if p == plan else
@@ -372,11 +428,9 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         jobs = [(label, tags) for label, tags in jobs if label not in have]
         msg = ready_text()
         if jobs:
-            for msg in run_cases(st, jobs):
-                if msg is not None:
-                    yield (*([gr.update()] * 5), msg)
+            msg = yield from run_live(st, jobs, lambda fig, text, chart: (gr.update(), fig, *([gr.update()] * 3), text, chart))
             msg = msg or ready_text()
-        yield (*surgery_view(st, plan), msg)
+        yield (*surgery_view(st, plan), msg, gr.update())
 
     def plan_once(st, choices):
         yield from simulate_plans(st, choices, False)
@@ -427,23 +481,54 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         model = llm(prefs)
         events = queue.Queue()
         baseline = openfoam_results(st).get("none")
+        timeline, actor = st["timeline"], "surgeon agent"
+        timeline.add(actor, "start", f"surgeon agent started ({model['provider']} · {model['model']})",
+                     tags=st["tags"], result=baseline, detail={"goal": goal})
 
         def simulate_fn(tags):
             case_dir = WORK_DIR / st["name"] / f"agent_{next(_RUN_ID)}"
-            return run_openfoam(tags, st["spacing"], st["origin"], st["cuts"], case_dir, flow.procs, flow.iterations)
+            return run_openfoam(tags, st["spacing"], st["origin"], st["cuts"], case_dir, flow.procs, flow.iterations,
+                                on_progress=lambda snap: events.put(("live", None, snap)))
+
+        def on_session(event, data):
+            """Every change the agent makes, for the spectator timeline, then for the live view."""
+            if event == "operate":
+                op = data["operation"]
+                timeline.add(actor, "operate", surgeon_label(op), tags=session.tags.copy(), detail={"operation": op})
+            elif event == "simulating":
+                timeline.add(actor, "simulate", "OpenFOAM started on the agent's airway", tags=session.tags.copy())
+            elif event == "simulated":
+                timeline.add(actor, "result", "OpenFOAM result on the agent's airway", tags=session.tags.copy(),
+                             result=data["record"])
+            elif event == "finished":
+                timeline.add(actor, "finish", "finished surgery", tags=session.tags.copy(),
+                             result=session.simulated.get(session.key()), detail={"kept": data["result"]["operations"]})
+            events.put(("session", event, data))
+
+        def on_step(step):
+            """The agent's words and its tool calls that change nothing (or were rejected) on the timeline."""
+            if step["kind"] == "model" and (step.get("content") or "").strip():
+                timeline.add(actor, "says", step["content"].strip()[:400])
+            elif step["kind"] == "tool":
+                rejected = isinstance(step.get("result"), dict) and "error" in step["result"]
+                if rejected or step["name"] not in ("operate", "undo", "simulate", "finish_surgery"):
+                    args = step.get("arguments")
+                    timeline.add(actor, "tool", step["name"] + (f" (rejected: {step['result']['error']})" if rejected else ""),
+                                 detail={"arguments": json.loads(args) if isinstance(args, str) and args.strip() else args})
+            events.put(("step", step["kind"], step))
 
         session = surgeon.SurgerySession(st["name"], st["tags"], st["cuts"], st["spacing"], st["origin"], simulate_fn,
-                                         baseline=baseline, listener=lambda event, data: events.put(("session", event, data)))
+                                         baseline=baseline, listener=on_session)
         client = OpenAI(api_key=model["api_key"], base_url=model["base_url"])
         out = {}
 
         def work():
             try:
                 out["result"] = surgeon.run_surgeon(session, goal or "lower the resistance with the least surgery", client,
-                                                    model["model"], model["provider"],
-                                                    listener=lambda step: events.put(("step", step["kind"], step)))
+                                                    model["model"], model["provider"], listener=on_step)
             except Exception as err:  # shown in the console
                 out["error"] = agents.explain_error(f"{type(err).__name__}: {err}")
+                timeline.add(actor, "error", f"surgeon agent failed: {out['error']}")
             events.put(("done", None, None))
 
         threading.Thread(target=work, daemon=True).start()
@@ -464,9 +549,10 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
             steps["text"] = " · ".join(lines[-8:]) or steps["text"]
             shown = [*log, steps]
             return (plot_theme(airway_figure(surface, title, after, changes)), table, gr.update(), info, status_text,
-                    console_html(shown), shown)
+                    console_html(shown), shown, gr.update())
 
         yield frame("Surgeon agent working…")
+        live_shown, n_sim = {}, 0
         while True:
             source, kind, data = events.get()
             if source == "done":
@@ -474,7 +560,12 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
             if source == "step" and kind == "tool":
                 lines.append(f"{data['name']}" + (" (rejected)" if isinstance(data.get("result"), dict) and "error" in data["result"] else ""))
                 continue
-            if source == "session" and kind == "simulating":
+            if source == "live":
+                figure, chart, text = live_view(st, f"agent_check_{n_sim}", session.tags, data, live_shown)
+                yield (figure, gr.update(), gr.update(), gr.update(), f"Surgeon agent's airway · {text}",
+                       gr.update(), gr.update(), chart)
+            elif source == "session" and kind == "simulating":
+                n_sim += 1
                 yield frame(f"OpenFOAM running on the agent's airway ({flow.procs} cores, {flow.iterations} iterations)…")
             elif source == "session" and kind in ("operate", "simulated", "finished"):
                 yield frame("Surgeon agent working…")
@@ -484,9 +575,9 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
             res = out["result"]
             final = {"role": "agents", "text": demo.as_markdown(res["summary"]) + f"\n\n_{res['seconds']} s · {res['summary_source']}_",
                      "meta": "surgeon"}
-        *view, _, _, shown = frame(ready_text())
+        *view, _, _, shown, _ = frame(ready_text())
         shown = [*shown, final]
-        yield (*view, ready_text(), console_html(shown), shown)
+        yield (*view, ready_text(), console_html(shown), shown, gr.update())
 
     def ask_local(pid, question, memory, log):
         """Code picks the tools, the distilled student writes the answer; nothing leaves this computer."""
@@ -557,12 +648,36 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
                     open_settings = gr.Button("⚙ Settings", elem_classes="signal", scale=0, min_width=110)
                 with gr.Row(elem_id="session"):
                     with gr.Column(elem_id="monitor", scale=1):
-                        gr.HTML('<div class="pane-title"><span>Airway</span><span>OpenFOAM resistance, Pa·s/cm³</span></div>')
-                        plot = gr.Plot(show_label=False)
-                        info = gr.Markdown(elem_classes="info")
-                        with gr.Row():
-                            table = gr.Dataframe(label="Regions (OpenFOAM)", interactive=False)
-                            ranking = gr.Dataframe(label="All 7 plans (OpenFOAM)", interactive=False)
+                        with gr.Tabs():
+                            with gr.Tab("Airway"):
+                                gr.HTML('<div class="pane-title"><span>Airway</span><span>OpenFOAM resistance, Pa·s/cm³ · '
+                                        'live while OpenFOAM runs</span></div>')
+                                plot = gr.Plot(show_label=False)
+                                live_chart = gr.Plot(show_label=False)
+                                info = gr.Markdown(elem_classes="info")
+                                with gr.Row():
+                                    table = gr.Dataframe(label="Regions (OpenFOAM)", interactive=False)
+                                    ranking = gr.Dataframe(label="All 7 plans (OpenFOAM)", interactive=False)
+                            with gr.Tab("Spectator"):
+                                gr.HTML('<div class="pane-title"><span>Spectator</span><span>every change, by you or the '
+                                        'surgeon agent, step by step</span></div>')
+                                spec_plot = gr.Plot(show_label=False)
+                                spec_detail = gr.Markdown(elem_classes="info")
+                                with gr.Row():
+                                    spec_prev = gr.Button("◀ Step", elem_classes="signal", min_width=70)
+                                    spec_play = gr.Button("▶ Play", elem_classes="signal", min_width=70)
+                                    spec_next = gr.Button("Step ▶", elem_classes="signal", min_width=70)
+                                    spec_follow = gr.Checkbox(value=True, label="Follow live")
+                                spec_step = gr.Slider(0, 1, value=0, step=1, label="Step")
+                                spec_series = gr.Plot(show_label=False)
+                                spec_table = gr.Dataframe(label="Timeline", interactive=False, max_height=260)
+                                with gr.Row():
+                                    spec_saved = gr.Dropdown([], label="Saved sessions", scale=3)
+                                    spec_load = gr.Button("Watch saved", elem_classes="signal", scale=1)
+                                    spec_live = gr.Button("Watch this airway", elem_classes="signal", scale=1)
+                                    spec_save = gr.Button("Save session", elem_classes="signal", scale=1)
+                                spec_note = gr.Markdown(elem_classes="note")
+                                spec_timer = gr.Timer(1.5)
                     with gr.Column(elem_id="controls", scale=0, min_width=244):
                         gr.HTML('<div class="section-head"><span>Commands</span></div>')
                         air_btn = gr.Button("Run airflow", elem_classes="signal")
@@ -591,15 +706,90 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         view_out = [plot, table, ranking, info]
         build.click(reconstruct, [pid, upload, source], [state, *view_out, status])
         app.load(reconstruct, [pid, upload, source], [state, *view_out, status])
-        air_btn.click(simulate_original, [state], [*view_out, status])
-        reset_btn.click(lambda st: original_view(st) if st else [gr.update()] * 4, [state], view_out)
+        air_btn.click(simulate_original, [state], [*view_out, status, live_chart])
+        reset_btn.click(show_original, [state], view_out)
         apply_btn.click(operate, [state, procedures], [state, *view_out])
-        sim_btn.click(plan_once, [state, procedures], [state, *view_out, status])
-        all_btn.click(plan_all, [state, procedures], [state, *view_out, status])
+        sim_btn.click(plan_once, [state, procedures], [state, *view_out, status, live_chart])
+        all_btn.click(plan_all, [state, procedures], [state, *view_out, status, live_chart])
         for trigger in (send.click, question.submit):
             trigger(ask, [pid, question, memory, log, prefs], [messages, log, memory, question, memory_info])
         clear.click(lambda: (console_html([]), [], [], "Session memory cleared."), None, [messages, log, memory, memory_info])
-        surgeon_btn.click(agent_operate, [state, goal, prefs, log], [*view_out, status, messages, log])
+        surgeon_btn.click(agent_operate, [state, goal, prefs, log], [*view_out, status, messages, log, live_chart])
+
+        # ---- spectator: replay the airway's timeline (or a saved one) step by step
+        spec = gr.State({"step": 0, "playing": False, "loaded": None, "drawn": None})
+        spec_out = [spec, spec_plot, spec_detail, spec_step, spec_series, spec_table, spec_play]
+
+        def watched(st, sp):
+            return sp.get("loaded") or (st or {}).get("timeline")
+
+        def spectate(st, sp, step=None, follow=False, advance=0, force=False):
+            """Draw step `step` of the watched timeline; only what changed is sent to the browser."""
+            tl = watched(st, sp)
+            if tl is None or not tl.events:
+                return (sp, *([gr.update()] * 6))
+            last = len(tl.events) - 1
+            if follow and not sp.get("loaded"):
+                step = last
+            step = min(max(0, int(sp["step"] if step is None else step) + advance), last)
+            playing = sp["playing"] and step < last
+            key = (id(tl), step, len(tl.events))
+            sp = {**sp, "step": step, "playing": playing}
+            if key == sp.get("drawn") and not force:
+                return (sp, *([gr.update()] * 6))
+            redraw = (id(tl), step) != (sp.get("drawn") or (None, None, None))[:2] or force
+            sp["drawn"] = key
+            event = tl.events[step]
+            figure = gr.update()
+            if redraw:
+                tags, result = tl.tags_at(step), tl.result_at(step)
+                surface = demo.tags_surface(tags, tl.spacing, tl.origin)
+                title = (f"{tl.name} · step {step} · {event['actor']}: {event['text'][:60]}"
+                         + (f" · OpenFOAM {result['total_resistance']:.3f} Pa·s/cm³" if result else ""))
+                figure = plot_theme(airway_figure(surface, title, result, tl.changes_at(step)))
+            return (sp, figure, spectator.detail_markdown(event), gr.update(maximum=max(last, 1), value=step),
+                    plot_theme(spectator.series_figure(tl, step)), tl.table(), "❚❚ Pause" if playing else "▶ Play")
+
+        def tick(st, sp, follow):
+            if sp.get("playing"):
+                return spectate(st, sp, advance=1)
+            return spectate(st, sp, follow=follow)
+
+        def toggle_play(st, sp):
+            tl = watched(st, sp)
+            at_end = tl is not None and sp["step"] >= len(tl.events) - 1
+            sp = {**sp, "playing": not sp["playing"]}
+            return spectate(st, sp, step=0 if (sp["playing"] and at_end) else None, force=True)
+
+        def save_timeline(st, sp):
+            tl = watched(st, sp)
+            if tl is None or not tl.events:
+                raise gr.Error("nothing to save yet")
+            path = tl.save()
+            return f"Saved {path}.", gr.update(choices=[p.name for p in spectator.saved_timelines()], value=path.name)
+
+        def load_timeline(name, st, sp):
+            if not name:
+                raise gr.Error("pick a saved session")
+            sp = {**sp, "loaded": spectator.Timeline.load(spectator.SAVE_DIR / name), "playing": False, "drawn": None}
+            return (*spectate(st, sp, step=0, force=True), False, f"Watching {name} (saved).")
+
+        def watch_current(st, sp):
+            sp = {**sp, "loaded": None, "drawn": None}
+            return (*spectate(st, sp, follow=True, force=True), True, "Watching this airway's session.")
+
+        spec_timer.tick(tick, [state, spec, spec_follow], spec_out, show_progress="hidden")
+        # moving by hand stops following the live end of the timeline
+        spec_step.release(lambda st, sp, v: (*spectate(st, sp, step=v), False), [state, spec, spec_step], [*spec_out, spec_follow])
+        spec_prev.click(lambda st, sp: (*spectate(st, {**sp, "playing": False}, advance=-1), False), [state, spec],
+                        [*spec_out, spec_follow])
+        spec_next.click(lambda st, sp: (*spectate(st, {**sp, "playing": False}, advance=1), False), [state, spec],
+                        [*spec_out, spec_follow])
+        spec_play.click(toggle_play, [state, spec], spec_out)
+        spec_save.click(save_timeline, [state, spec], [spec_note, spec_saved])
+        spec_load.click(load_timeline, [spec_saved, state, spec], [*spec_out, spec_follow, spec_note])
+        spec_live.click(watch_current, [state, spec], [*spec_out, spec_follow, spec_note])
+        app.load(lambda: gr.update(choices=[p.name for p in spectator.saved_timelines()]), None, [spec_saved])
 
         # ---- settings
         def default_model(name: str) -> str:

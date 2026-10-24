@@ -125,14 +125,16 @@ boundaryField
 def case_files(processes: int = 8, turbulence: str = "kOmegaSST", max_iterations: int = MAX_ITERATIONS,
                inlets: tuple[str, ...] = ("inlet",), sample_planes: bool = True,
                mesh_commands: list[str] | None = None, write_format: str = "binary",
-               reconstruct: bool = False, planes: list[tuple[str, tuple, tuple]] | None = None) -> dict[str, str]:
+               reconstruct: bool = False, planes: list[tuple[str, tuple, tuple]] | None = None,
+               extra_functions: str = "") -> dict[str, str]:
     """OpenFOAM case dictionaries and run script, keyed by relative path.
 
     The defaults build the idealized tube case from a gmsh mesh. Patient
     airways (`nasal.anatomy`) pass their own inlet patches and mesh commands,
     skip the plane sampling, and keep the full fields in ASCII. `planes` replaces
     the tube's x-planes with named cutting planes (name, point, normal) in meters,
-    as the smooth patient airways use (`nasal.smooth`).
+    as the smooth patient airways use (`nasal.smooth`). `extra_functions` adds
+    function objects, such as the live sampling in `nasal.live`.
     """
     if turbulence not in TURBULENCE:
         raise ValueError(f"turbulence must be one of {TURBULENCE}")
@@ -202,6 +204,7 @@ functions
         fields ( p {{ mean on; prime2Mean off; base time; }} U {{ mean on; prime2Mean off; base time; }} );
     }}
 {plane_function}
+{extra_functions}
 }}
 """),
         "system/fvSchemes": _dict("dictionary", "fvSchemes", """
@@ -308,13 +311,29 @@ def docker_available() -> bool:
     return docker is not None and subprocess.run([docker, "info"], capture_output=True).returncode == 0
 
 
-def run_case(case_dir: Path, image: str = IMAGE) -> None:
+def run_case(case_dir: Path, image: str = IMAGE, poll=None, every: float = 2.0) -> None:
+    """Run the case's Allrun in Docker. With `poll`, it is called every `every` seconds while OpenFOAM runs
+    (for a live view, `nasal.live`) and once more at the end."""
     docker = shutil.which("docker") or "docker"
     cmd = [docker, "run", "--rm", "-v", f"{case_dir.resolve()}:/case", image,
            "bash", "-lc", "cd /case && bash Allrun"]
-    done = subprocess.run(cmd, capture_output=True, text=True)
-    if done.returncode != 0:
-        tail = "\n".join((done.stdout + done.stderr).splitlines()[-20:])
+    if poll is None:
+        done = subprocess.run(cmd, capture_output=True, text=True)
+        returncode, output = done.returncode, done.stdout + done.stderr
+    else:
+        import tempfile
+
+        with tempfile.TemporaryFile("w+") as out:  # a file, so a chatty run cannot fill a pipe and stall
+            proc = subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, text=True)
+            while proc.poll() is None:
+                poll()
+                time.sleep(every)
+            poll()
+            returncode = proc.returncode
+            out.seek(0)
+            output = out.read()
+    if returncode != 0:
+        tail = "\n".join(output.splitlines()[-20:])
         raise RuntimeError(f"OpenFOAM failed in {case_dir} (see its log.* files):\n{tail}")
 
 

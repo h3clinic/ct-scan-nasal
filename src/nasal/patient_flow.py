@@ -34,12 +34,23 @@ def run_settings(cores: int | None = None, procs: int | None = None) -> tuple[in
 
 
 def run_openfoam(tags: np.ndarray, spacing: np.ndarray, origin: np.ndarray, cuts: dict, case_dir: Path,
-                 procs: int = 8, max_iterations: int = FAST_ITERATIONS) -> dict:
-    """Mesh the airway, run simpleFoam in Docker and read the result (a few minutes)."""
+                 procs: int = 8, max_iterations: int = FAST_ITERATIONS, on_progress=None) -> dict:
+    """Mesh the airway, run simpleFoam in Docker and read the result (a few minutes). With `on_progress`, the
+    case also samples its fields while it runs and `on_progress(snapshot)` gets `nasal.live` snapshots."""
     from .simulate import run_case
 
-    geometry = anatomy.write_airway_case(case_dir, tags, spacing, origin, cuts, procs, max_iterations=max_iterations)
-    run_case(case_dir)
+    live_every = None
+    if on_progress is not None:
+        from .live import LIVE_EVERY, LiveCase
+
+        live_every = LIVE_EVERY
+    geometry = anatomy.write_airway_case(case_dir, tags, spacing, origin, cuts, procs, max_iterations=max_iterations,
+                                         live_every=live_every)
+    if on_progress is None:
+        run_case(case_dir)
+    else:
+        reader = LiveCase(case_dir, max_iterations)
+        run_case(case_dir, poll=lambda: on_progress(reader.poll()))
     return {**geometry, **anatomy.read_patient(case_dir, max_iterations=max_iterations)}
 
 
