@@ -182,10 +182,19 @@ def run_case(case: mutations.Case, execute: Executor, client, model: str, work: 
     sim = lambda t: execute(t, spacing, origin, cuts, work / case.case_id / f"run_{next(runs)}")  # noqa: E731
     before = sim(tags)
     oracle = oracle_plan(applied)
-    oracle_tags = tags
-    for op in oracle:
-        oracle_tags = ps.operate(oracle_tags, cuts, spacing, **op)
-    oracle_drop = drop_pct(before, sim(oracle_tags)) if oracle else 0.0
+
+    def plan_drop(ops):
+        t = tags
+        for op in ops:
+            t = ps.operate(t, cuts, spacing, **op)
+        return drop_pct(before, sim(t))
+
+    oracle_drop = plan_drop(oracle) if oracle else 0.0
+    # The voxel septoplasty removes more airway than it adds, so an oracle that includes it can raise resistance;
+    # the same plan without it is a fairer reference then.
+    without = [op for op in oracle if op["technique"] != "septoplasty"]
+    if without and len(without) < len(oracle):
+        oracle_drop = max(oracle_drop, plan_drop(without))
     feats = features(before)
     best_known, attempts, feedback, history = oracle_drop, [], "", []
     for attempt in range(1, max_attempts + 1):

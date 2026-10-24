@@ -70,3 +70,20 @@ def test_unsolvable_case_stops_after_the_attempt_limit(tmp_path):
     row = campaign.run_case(CASE, executor, client, "m", tmp_path, campaign.Experience(tmp_path / "e.jsonl"),
                             max_attempts=2, base=base, log=lambda m: None)
     assert not row["solved"] and len(row["attempts"]) == 2
+
+
+def test_reference_also_tries_the_oracle_without_septoplasty(tmp_path):
+    case = mutations.Case("C00-00009", "P001", 9, [mutations.Pathology("turbinate_hypertrophy", "left", 1),
+                                                   mutations.Pathology("septal_deviation", "right", 1)])
+    calls = []
+
+    def counting(tags, spacing, origin, cuts, case_dir):
+        calls.append(case_dir.name)
+        return fake_openfoam(tags)
+
+    good = {"technique": "turbinate_reduction", "side": "left", "depth": 1}
+    client = ScriptedClient(operate_then_finish([good]))
+    row = campaign.run_case(case, counting, client, "m", tmp_path, campaign.Experience(tmp_path / "e.jsonl"),
+                            max_attempts=1, base=base, log=lambda m: None)
+    assert calls[:3] == ["run_0", "run_1", "run_2"]  # problem airway, oracle, oracle without septoplasty
+    assert row["oracle_drop_pct"] > 0
