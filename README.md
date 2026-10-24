@@ -223,7 +223,7 @@ Everything above starts from NasalSeg's expert-drawn labels. `nasal.segment` sta
 pip install -e ".[dev]"
 nasal-generate -n 300 --seed 0 --out data          # writes data/cases.csv
 nasal-generate -n 300 --seed 0 --out data --stl    # also writes one STL per side per case
-pytest
+pip install -e ".[dev,agents,patients,segment,demo]" && pytest   # what CI runs; torch and gmsh tests skip without them
 ```
 
 `data/cases.csv` has one row per case: the parameters, total and per-side resistance and flow, and resistance for each side and region.
