@@ -484,6 +484,8 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         timeline, actor = st["timeline"], "surgeon agent"
         timeline.add(actor, "start", f"surgeon agent started ({model['provider']} · {model['model']})",
                      tags=st["tags"], result=baseline, detail={"goal": goal})
+        # saved from the agent's thread, so the run can be replayed (Watch saved) even if the page reconnects
+        save_to = spectator.SAVE_DIR / f"{st['name']}_agent_{time.strftime('%Y%m%d-%H%M%S')}.npz"
 
         def simulate_fn(tags):
             case_dir = WORK_DIR / st["name"] / f"agent_{next(_RUN_ID)}"
@@ -500,9 +502,11 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
             elif event == "simulated":
                 timeline.add(actor, "result", "OpenFOAM result on the agent's airway", tags=session.tags.copy(),
                              result=data["record"])
+                timeline.save(save_to)
             elif event == "finished":
                 timeline.add(actor, "finish", "finished surgery", tags=session.tags.copy(),
                              result=session.simulated.get(session.key()), detail={"kept": data["result"]["operations"]})
+                timeline.save(save_to)
             events.put(("session", event, data))
 
         def on_step(step):
@@ -529,6 +533,9 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
             except Exception as err:  # shown in the console
                 out["error"] = agents.explain_error(f"{type(err).__name__}: {err}")
                 timeline.add(actor, "error", f"surgeon agent failed: {out['error']}")
+            else:
+                timeline.add(actor, "summary", out["result"]["summary"][:400], detail={"source": out["result"]["summary_source"]})
+            timeline.save(save_to)
             events.put(("done", None, None))
 
         threading.Thread(target=work, daemon=True).start()
@@ -573,8 +580,8 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
             final = {"role": "agents", "text": f"**Surgeon agent failed:** {out['error']}", "meta": "surgeon"}
         else:
             res = out["result"]
-            final = {"role": "agents", "text": demo.as_markdown(res["summary"]) + f"\n\n_{res['seconds']} s · {res['summary_source']}_",
-                     "meta": "surgeon"}
+            final = {"role": "agents", "text": demo.as_markdown(res["summary"]) + f"\n\n_{res['seconds']} s · {res['summary_source']} · "
+                                                f"timeline saved as {save_to.name} (Spectator → Watch saved)_", "meta": "surgeon"}
         *view, _, _, shown, _ = frame(ready_text())
         shown = [*shown, final]
         yield (*view, ready_text(), console_html(shown), shown, gr.update())
@@ -790,6 +797,7 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         spec_load.click(load_timeline, [spec_saved, state, spec], [*spec_out, spec_follow, spec_note])
         spec_live.click(watch_current, [state, spec], [*spec_out, spec_follow, spec_note])
         app.load(lambda: gr.update(choices=[p.name for p in spectator.saved_timelines()]), None, [spec_saved])
+        spec_saved.focus(lambda: gr.update(choices=[p.name for p in spectator.saved_timelines()]), None, [spec_saved])
 
         # ---- settings
         def default_model(name: str) -> str:

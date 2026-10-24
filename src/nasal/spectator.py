@@ -95,7 +95,9 @@ class Timeline:
         arrays = {"shape": np.array(self.original.shape), "airway_idx": airway.astype(np.int64),
                   "airway_val": self.original.ravel()[airway], "spacing": self.spacing, "origin": self.origin}
         meta = []
-        for e in self.events:
+        with self._lock:  # the surgeon agent may be adding steps while this saves
+            events = list(self.events)
+        for e in events:
             if "diff" in e:
                 arrays[f"diff_idx_{e['step']}"], arrays[f"diff_val_{e['step']}"] = e["diff"]
             meta.append({k: v for k, v in e.items() if k != "diff"} | {"has_diff": "diff" in e})
