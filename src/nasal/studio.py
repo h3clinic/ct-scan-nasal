@@ -96,6 +96,19 @@ def airway_figure(surface: dict, title: str, result: dict | None = None, changes
     return fig
 
 
+def import_text(report: dict) -> str:
+    """One line on how an uploaded scan was read: format, slices, voxel size and the crop to the nose."""
+    sp = report["spacing_mm"]
+    text = (f"**Scan:** {report['format']}, {report['slices']} slices, voxels {sp[0]:g} × {sp[1]:g} × {sp[2]:g} mm")
+    if report.get("series_found", 1) > 1:
+        text += f" (the largest of {report['series_found']} series)"
+    if report.get("cropped"):
+        w, d, h = report["size_mm"]
+        text += (f"; full-head scan cropped to {w:.0f} × {d:.0f} × {h:.0f} mm around the nose (from the nose tip "
+                 f"and the hard palate, found {report['landmarks']['palate_search']}). Check that the airway looks complete")
+    return text + "."
+
+
 def surgeon_label(op: dict) -> str:
     """'valve repair (both, 1.2 mm)' for an operation the surgeon agent applied (or undid); depths given in
     voxel layers read '(both, 2 layers)'."""
@@ -217,7 +230,7 @@ def console_html(entries: list[dict]) -> str:
     return '<div class="messages">' + ("".join(rows) or '<div class="msg system"><div>Ask the agents about the airway or a surgery plan.</div></div>') + "</div>"
 
 
-def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIENTS_PATH,
+def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, sim_path: Path = agents.PATIENTS_PATH,
               segment_model: Path | None = None,
               procs: int | None = None, iterations: int = FAST_ITERATIONS):
     import gradio as gr
@@ -229,10 +242,11 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
     # one OpenFOAM source for the studio and the agents: stored runs plus live runs made in this app
     flow = PatientFlow(patients, surgery, labels_dir, live=True, procs=procs, iterations=iterations)
     segment_model = Path(segment_model or sg.MODEL_PATH)
-    images = {f.name.split("_")[0]: f for f in Path(images_dir).glob("*_img.nrrd")}
-    labels = {f.name.split("_")[0]: f for f in Path(labels_dir).glob("*_seg.nrrd")}
+    # the NasalSeg folders are optional: without them the studio works from uploaded scans only
+    images = {f.name.split("_")[0]: f for f in Path(images_dir).glob("*_img.nrrd")} if images_dir else {}
+    labels = {f.name.split("_")[0]: f for f in Path(labels_dir).glob("*_seg.nrrd")} if labels_dir else {}
     ids = sorted(set(images) & set(labels))
-    default = demo.DEFAULT_PATIENT if demo.DEFAULT_PATIENT in ids else ids[0]
+    default = demo.DEFAULT_PATIENT if demo.DEFAULT_PATIENT in ids else (ids[0] if ids else None)
     session_runs: dict[tuple[str, str], dict] = {}  # runs on airways that are not NasalSeg expert labels
     max_cores = max(1, (os.cpu_count() or 4) - 2)
 
@@ -248,14 +262,25 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
 
     def load_airway(pid, upload, source):
         """-> state dict with the cut airway, or raises gr.Error."""
-        if upload is not None:
+        imported = None
+        if upload:
             if not segment_model.exists():
                 raise gr.Error(f"an uploaded CT needs the segmentation model: run nasal-segment train (writes {segment_model})")
             import joblib
 
-            ct, spacing, origin = sg.load_ct(Path(upload))
+            from . import ct_import
+
+            paths = [Path(f) for f in (upload if isinstance(upload, list) else [upload])]
+            try:
+                ct, spacing, origin, imported = ct_import.prepare(paths)
+            except ValueError as err:
+                raise gr.Error(f"could not read the scan: {err}") from err
             lab = sg.segment(ct, spacing, joblib.load(segment_model))
-            name, how = Path(upload).name.split(".")[0], "segmented from the uploaded CT"
+            first = paths[0].name
+            name = (first[:-7] if first.lower().endswith(".nii.gz") else paths[0].stem) if len(paths) == 1 else "uploaded CT"
+            how = f"segmented from the uploaded CT ({imported['format']}, {imported['slices']} slices)"
+        elif pid not in images:
+            raise gr.Error("upload a CT scan (DICOM, NIfTI or NRRD), or start the studio with --images and --labels")
         elif source == "Automatic (from the CT)":
             if not segment_model.exists():
                 raise gr.Error(f"automatic segmentation needs {segment_model}: run nasal-segment train")
@@ -272,7 +297,7 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
         except ValueError as err:
             raise gr.Error(f"{name}: {err}") from err
         return {"name": name, "how": how, "key": f"{name}:{how}", "tags": tags, "cuts": cuts, "spacing": spacing,
-                "origin": origin, "expert": how == "NasalSeg expert labels",
+                "origin": origin, "expert": how == "NasalSeg expert labels", "imported": imported,
                 "timeline": spectator.Timeline(name, tags, spacing, origin, how)}
 
     def original_view(st):
@@ -286,11 +311,17 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
                 f"left {geometry['left_volume_cm3']:.1f} cm³, right {geometry['right_volume_cm3']:.1f} cm³.  \n")
         info += (f"**OpenFOAM** (air at 150 Pa): {summary(result)}" if result else
                  "No OpenFOAM run for this airway yet: **Run airflow**.")
+        if st.get("imported"):
+            info += "  \n" + import_text(st["imported"])
         standard = ps.standard_rule_patient(geometry)
         return (plot_theme(airway_figure(surface, title, result)), region_table(result) if result else None,
                 plan_ranking(results, standard), info)
 
     def reconstruct(pid, upload, source):
+        if not upload and pid not in images:  # no NasalSeg folders and nothing uploaded yet
+            return ({}, gr.update(), gr.update(), gr.update(),
+                    "**Upload a CT scan to start:** DICOM (a .zip of the series or the slice files), NIfTI or NRRD.",
+                    ready_text())
         st = load_airway(pid, upload, source)
         st["timeline"].add("you", "open", f"opened {st['name']} ({st['how']})", result=openfoam_results(st).get("none"))
         return (st, *original_view(st), ready_text())
@@ -653,7 +684,8 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
                 source = gr.Radio(["Expert labels", "Automatic (from the CT)"], value="Expert labels", label="Airway from")
                 build = gr.Button("Open airway", variant="primary", elem_classes="signal")
                 gr.HTML('<div class="section-head"><span>Upload</span></div>')
-                upload = gr.File(label="CT volume (.nrrd, HU)", file_types=[".nrrd"], height=90)
+                upload = gr.File(label="CT scan: DICOM (.zip or slice files), NIfTI or NRRD", file_count="multiple",
+                                 height=110)
                 with gr.Accordion("ABOUT THE MODEL", open=False):
                     gr.Markdown("Rigid walls, one steady breath at 150 Pa, voxel walls. Every resistance comes "
                                 "from OpenFOAM. Decision thresholds are placeholders until an ENT reviews them.",
@@ -902,8 +934,8 @@ def main(argv: list[str] | None = None) -> None:
     import gradio as gr
 
     parser = argparse.ArgumentParser(description="Nasal0 studio (Gradio): CT to airway, OpenFOAM airflow, virtual surgery, agents.")
-    parser.add_argument("--images", type=Path, required=True, help="NasalSeg images folder (*_img.nrrd)")
-    parser.add_argument("--labels", type=Path, required=True, help="NasalSeg labels folder (*_seg.nrrd)")
+    parser.add_argument("--images", type=Path, default=None, help="NasalSeg images folder (*_img.nrrd); optional")
+    parser.add_argument("--labels", type=Path, default=None, help="NasalSeg labels folder (*_seg.nrrd); optional")
     parser.add_argument("--sim", type=Path, default=agents.PATIENTS_PATH, help="stored OpenFOAM runs of the untouched airways")
     parser.add_argument("--segment-model", type=Path, default=None, help="default: data/segment_model.joblib")
     parser.add_argument("--procs", type=int, default=None, help="cores per OpenFOAM case (default: up to 8)")

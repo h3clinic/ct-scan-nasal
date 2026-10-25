@@ -47,6 +47,7 @@ The agent count stays at four: more agents mostly add latency and failure points
 | Airflow ground truth | OpenFOAM v2606 (`opencfd/openfoam-run:2606` in Docker), simpleFoam | **Done**: `nasal.simulate`, `nasal-simulate` |
 | Real patient airways | NasalSeg CT labels, voxel hex mesh written as an OpenFOAM polyMesh | **Done**: `nasal.anatomy`, `nasal-patients` |
 | CT to airway (no expert labels) | Threshold + watershed regions + random forest (scikit-image, scikit-learn) | **First version**: `nasal.segment`, `nasal-segment`; see CT to airway |
+| CT import (DICOM, NIfTI, NRRD) | pydicom, nibabel; crop to the nose from the nose tip and hard palate | **First version**: `nasal.ct_import`, in the studio upload and `nasal-segment run`; crop not yet tried on a real full-head scan |
 | Fast stand-in model | PyTorch MLP (tubes), power law on measured geometry (patients) | **Done**: `nasal.surrogate`, `nasal-surrogate` |
 | Decision rules (standard and improved) | Plain Python functions | **Prototype**: `nasal.decision` (tubes) and `nasal.decision.patient` (real airways, verified in OpenFOAM); thresholds are placeholders pending ENT review |
 | Comparison and logging | pandas + JSON agent log | **Done**: `nasal-agents --log` |
@@ -192,7 +193,9 @@ The voxel airways have stair-stepped walls (the scans are 0.59 x 0.59 mm in-plan
 
 ## CT to airway (no expert labels)
 
-Everything above starts from NasalSeg's expert-drawn labels. `nasal.segment` starts from the raw CT instead, so a new patient's scan can enter the pipeline. Its output is a label volume in the same convention (3 right cavity, 4 left, 5 nasopharynx), so the cuts, meshing and OpenFOAM run on it unchanged. The input has to be a CT volume (a stack of slices); a single 2D image cannot give a 3D airway.
+Everything above starts from NasalSeg's expert-drawn labels. `nasal.segment` starts from the raw CT instead, so a new patient's scan can enter the pipeline. Its output is a label volume in the same convention (3 right cavity, 4 left, 5 nasopharynx), so the cuts, meshing and OpenFOAM run on it unchanged. The input has to be a CT volume (a stack of slices); a single 2D image cannot give a 3D airway. A NasalSeg scan has 39 to 59 axial slices (median 51), 1.5 mm apart, with 0.59 mm pixels, already cropped to the nose.
+
+**Any CT in** (`nasal.ct_import`): a DICOM series (a folder, a .zip, or the slice files themselves; the largest CT series is used), NIfTI (.nii, .nii.gz) or NRRD is read into the same layout as NasalSeg: Hounsfield units, axes toward the patient's left, back and top, positions in mm. Slices must be evenly spaced and axis-aligned. Scans with a tilted gantry are refused rather than resampled, and so is compressed DICOM pixel data without an installed decoder. A full-head scan (wider than 130 mm or taller than 100 mm) is cropped to a box around the nose. The box is placed from the nose tip (the most forward point of the head near the midline) and the hard palate (found just below the tip, then in a wider window, then in the whole scan). It spans ±55 mm around the midline, from 5 mm in front of the tip to 135 mm behind it, and from 38 mm below the palate to 80 mm above it. These sizes cover the expert labels of all 130 NasalSeg scans relative to the same landmarks, plus a margin. Placed on each NasalSeg scan, the box contains the whole labeled airway in 130 of 130. A NasalSeg scan placed inside a larger empty volume is cropped back and segments to the same airway (Dice 1.000, 1.000, 0.999). The crop has not yet been tried on a real full-head scan, so check the airway it gives.
 
 **Method:**
 1. **Air:** every voxel below a threshold (default −300 HU). Air outside the head is dropped by keeping, in each axial slice, only air enclosed by tissue.
@@ -267,7 +270,7 @@ From raw CT instead of expert labels (`pip install -e ".[segment]"`; NasalSeg sh
 ```bash
 nasal-segment eval --images nasalseg/images --labels nasalseg/labels --thresholds -150 -200 -300 -400  # grouped CV -> data/segment_eval.csv
 nasal-segment train --images nasalseg/images --labels nasalseg/labels                                  # -> data/segment_model.joblib
-nasal-segment run --ct new_scan.nrrd --out new_scan_seg.nrrd                                            # one scan -> NasalSeg-style labels
+nasal-segment run --ct new_scan.zip --out new_scan_seg.nrrd                                             # one scan (DICOM folder/.zip, NIfTI or NRRD) -> NasalSeg-style labels
 nasal-segment holdout --images nasalseg/images --labels nasalseg/labels --ids P022 P064                # train without them, segment them
 nasal-patients simulate --labels data/segment_auto --ids P022 P064 --out data/segment_auto_sim.csv     # OpenFOAM on the automatic airways
 ```
@@ -293,12 +296,13 @@ The demo opens at http://127.0.0.1:7860.
 ### Studio
 
 ```bash
-nasal-studio --images nasalseg/images --labels nasalseg/labels    # opens at http://127.0.0.1:7861
+nasal-studio                                                     # opens at http://127.0.0.1:7861; upload a scan to start
+nasal-studio --images nasalseg/images --labels nasalseg/labels    # also lists the NasalSeg patients
 ```
 
 One window, laid out like the [VOCO](https://github.com/h3clinic/VOCO) desktop app: patients on the left, the airway in the middle, commands on the right and the agents as the console below.
 
-- **CT to airway:** pick a NasalSeg CT, or upload a CT volume (.nrrd, HU). The airway comes from the expert labels or from automatic segmentation (needs `data/segment_model.joblib` from `nasal-segment train`).
+- **CT to airway:** upload a CT scan: DICOM (a .zip of the series or the slice files, which may have no extension), NIfTI or NRRD. A full-head scan is cropped to the nose (see Any CT in), and the info panel says how the scan was read and cropped. With `--images` and `--labels`, the NasalSeg patients are listed too. The airway comes from the expert labels or from automatic segmentation (needs `data/segment_model.joblib` from `nasal-segment train`).
 - **Airflow:** every resistance shown comes from OpenFOAM: the stored run where one exists, otherwise **Run airflow** starts one in Docker. The patient surrogate is not used here, because on some airways it is off by more than 30% (P022: 0.141 against OpenFOAM's 0.263 Pa·s/cm³).
 - **Virtual surgery:** tick turbinate reduction, valve repair or septoplasty, see the voxels each one adds, then run OpenFOAM on the plan or on all 7 plans. The table ranks the plans by OpenFOAM's resistance drop and marks the standard rule's pick.
 - **Faster local runs:** app runs stop at 900 iterations instead of 3000 and use up to 8 cores each, two cases at a time on a 20-core machine (`--procs`, `--iterations`). In the 13 stored 3000-iteration patient runs, total flow at iteration 600 was already within 0.11% of the final value, and P022 run this way matched its stored run within 0.22% in every region in 237 s.

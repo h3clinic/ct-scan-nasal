@@ -326,7 +326,9 @@ def segment_main(argv: list[str] | None = None) -> None:
     e.add_argument("--out", type=Path, default=Path("data/segment_eval.csv"))
     t.add_argument("--threshold", type=float, default=sg.AIR_THRESHOLD_HU)
     t.add_argument("--out", type=Path, default=sg.MODEL_PATH)
-    r.add_argument("--ct", type=Path, required=True, help="CT volume (.nrrd, LPS, HU)")
+    r.add_argument("--ct", type=Path, nargs="+", required=True,
+                   help="CT scan: a DICOM folder, .zip or slice files, NIfTI (.nii/.nii.gz) or NRRD; full-head scans "
+                        "are cropped to the nose (nasal.ct_import)")
     r.add_argument("--model", type=Path, default=sg.MODEL_PATH)
     r.add_argument("--threshold", type=float, default=sg.AIR_THRESHOLD_HU)
     r.add_argument("--out", type=Path, required=True, help="output label file (.nrrd)")
@@ -335,7 +337,11 @@ def segment_main(argv: list[str] | None = None) -> None:
     if args.command == "run":
         import joblib
 
-        ct, spacing, origin = sg.load_ct(args.ct)
+        from . import ct_import
+
+        ct, spacing, origin, report = ct_import.prepare(args.ct)
+        print(f"read {report['format']}: {report['slices']} slices" + (f", cropped to {report['size_mm']} mm around the nose"
+                                                                        if report.get("cropped") else ""))
         labels = sg.segment(ct, spacing, joblib.load(args.model), args.threshold)
         args.out.parent.mkdir(parents=True, exist_ok=True)
         sg.write_labels(args.out, labels, spacing, origin)
