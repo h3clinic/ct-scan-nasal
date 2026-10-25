@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import agents, anatomy, demo, distill, live, providers, settings, spectator, surgeon
+from . import agents, anatomy, demo, distill, live, providers, settings, setup_check, spectator, surgeon
 from .decision import patient as ps
 from .params import REGIONS, SIDES
 from .patient_flow import _RUN_ID, FAST_ITERATIONS, WORK_DIR, PatientFlow, run_openfoam
@@ -162,6 +162,9 @@ label, .wrap label span, .prose, .info, td, th { font-size:11px !important; }
   background:var(--chrome); border-bottom:1px solid var(--line); color:var(--muted); font-size:10px; }
 #status, #status * { margin:0; font-size:10px !important; color:var(--muted) !important; text-align:right; }
 #topbar { flex-wrap:nowrap !important; }
+#setup-banner { background:#2a2414 !important; border-bottom:1px solid #6b5a2a !important; padding:8px 12px !important;
+  color:#e8d9a8 !important; font-size:11px; }
+#setup-banner p { margin:0; }
 .pane-title { display:flex; align-items:center; justify-content:space-between; min-height:36px; padding:0 12px;
   background:var(--chrome); border-bottom:1px solid var(--line-soft); color:#d0d0d0; font-size:10px; font-weight:650; }
 #session { gap:0 !important; flex-wrap:nowrap !important; }
@@ -677,6 +680,9 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
             apply_foam = gr.Button("Apply OpenFOAM settings", elem_classes="signal")
             check_docker = gr.Button("Check Docker", elem_classes="signal")
             docker_info = gr.Markdown(elem_classes="note")
+            gr.HTML('<div class="section-head"><span>Setup</span></div>')
+            setup_info = gr.Markdown("Checking what this computer has…", elem_classes="note")
+            recheck = gr.Button("Recheck setup", elem_classes="signal")
         with gr.Row(elem_id="shell"):
             with gr.Column(elem_id="sidebar", scale=0, min_width=258):
                 gr.HTML(f'<div class="section-head"><span>Patients</span><span class="count">{len(ids)}</span></div>')
@@ -694,6 +700,7 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
                 with gr.Row(elem_id="topbar"):
                     status = gr.Markdown(ready_text(), elem_id="status")
                     open_settings = gr.Button("⚙ Settings", elem_classes="signal", scale=0, min_width=110)
+                setup_banner = gr.Markdown(visible=False, elem_id="setup-banner")
                 with gr.Row(elem_id="session"):
                     with gr.Column(elem_id="monitor", scale=1):
                         with gr.Tabs():
@@ -925,6 +932,18 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
             comp.change(lambda p: model_text(p), [prefs], [model_label])
         apply_foam.click(apply_openfoam, [cores, at_once, iters], [status, docker_info])
         check_docker.click(lambda: settings.docker_status(IMAGE), None, [docker_info])
+
+        def run_setup_checks():
+            """The setup list for Settings, and a banner when something the studio needs is missing."""
+            items = setup_check.checks(segment_model, images_dir, labels_dir, sim_path)
+            missing = [i for i in items if i["status"] == "missing"]
+            banner = ("**Setup needs attention:** " + "; ".join(f"{i['name']} ({i['detail']}): {i['without']}"
+                                                              for i in missing)
+                      + ". Open ⚙ Settings → Setup for the fix.") if missing else ""
+            return setup_check.markdown(items), gr.update(value=banner, visible=bool(missing))
+
+        app.load(run_setup_checks, None, [setup_info, setup_banner])
+        recheck.click(run_setup_checks, None, [setup_info, setup_banner])
     return app
 
 
@@ -941,9 +960,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--procs", type=int, default=None, help="cores per OpenFOAM case (default: up to 8)")
     parser.add_argument("--iterations", type=int, default=FAST_ITERATIONS, help="solver iterations per app run")
     parser.add_argument("--port", type=int, default=7861)
+    parser.add_argument("--open", action="store_true", help="open the studio in the default browser")
     args = parser.parse_args(argv)
     app = build_app(args.images, args.labels, args.sim, args.segment_model, args.procs, args.iterations)
-    app.launch(server_port=args.port, server_name="127.0.0.1", css=STUDIO_CSS,
+    app.launch(server_port=args.port, server_name="127.0.0.1", css=STUDIO_CSS, inbrowser=args.open,
                theme=gr.themes.Base(neutral_hue="neutral", text_size="sm", spacing_size="sm", radius_size="sm"), js="() => document.body.classList.add('dark')")
 
 

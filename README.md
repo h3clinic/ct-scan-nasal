@@ -19,6 +19,22 @@ pip install -e ".[dev,sim,surrogate,agents,patients,demo]"
 pytest
 ```
 
+### Quick start (studio)
+
+Windows: double-click `start-studio.bat`. macOS or Linux: `./start-studio.sh`. The first run creates a Python environment in `~/.venvs/ct-scan-nasal` and installs the studio. Every run prints the setup check and opens the studio in the browser, kept awake while it runs. Upload a CT scan (DICOM, NIfTI or NRRD) to start. Set `NASALSEG_ROOT` to a NasalSeg folder (with `images/` and `labels/`) to list its patients too. `--update` reinstalls after pulling new code, and `--no-browser` starts without opening a browser.
+
+What the studio uses, and what still works without it (checked at start, and in Settings → Setup with **Recheck**):
+
+| Needed for | Requirement | Without it |
+| --- | --- | --- |
+| Starting the app | Python 3.12 and the studio's packages (the launcher installs them) | the studio does not start |
+| Airflow runs | Docker Desktop, running, and the OpenFOAM image (`python -m nasal.setup_check pull`, about 1.1 GB) | stored OpenFOAM results still show; new airways and plans cannot be simulated |
+| Uploaded scans | the segmentation model, `data/segment_model.joblib` (`nasal-segment train`) | NasalSeg expert labels still open |
+| Local model, no API key | Ollama with `nasal-explainer` (see Local explainer) | the cloud agents work with an API key |
+| NasalSeg patients (optional) | `NASALSEG_ROOT`, or `--images` and `--labels` | uploaded scans only |
+
+`python -m nasal.setup_check` (or `nasal-setup`) prints the same checks. Every check is quick and changes nothing.
+
 ## Design
 
 ### Agents
@@ -306,6 +322,7 @@ One window, laid out like the [VOCO](https://github.com/h3clinic/VOCO) desktop a
 - **Airflow:** every resistance shown comes from OpenFOAM: the stored run where one exists, otherwise **Run airflow** starts one in Docker. The patient surrogate is not used here, because on some airways it is off by more than 30% (P022: 0.141 against OpenFOAM's 0.263 Pa·s/cm³).
 - **Virtual surgery:** tick turbinate reduction, valve repair or septoplasty, see the voxels each one adds, then run OpenFOAM on the plan or on all 7 plans. The table ranks the plans by OpenFOAM's resistance drop and marks the standard rule's pick.
 - **Faster local runs:** app runs stop at 900 iterations instead of 3000 and use up to 8 cores each, two cases at a time on a 20-core machine (`--procs`, `--iterations`). In the 13 stored 3000-iteration patient runs, total flow at iteration 600 was already within 0.11% of the final value, and P022 run this way matched its stored run within 0.22% in every region in 237 s.
+- **Setup:** at start the studio checks Python packages, Docker, the OpenFOAM image, the segmentation model, Ollama and its model, the NasalSeg folders and the stored results (`nasal.setup_check`). Settings → Setup lists each one with a plain fix and what still works without it, and **Recheck** runs them again. A banner at the top names anything missing that the studio needs.
 - **Settings** (top right): paste an API key from OpenAI, Anthropic (Claude), Google Gemini or OpenRouter and press **Use key**; the provider is detected from the key, and a custom OpenAI-compatible address (for example a local Ollama server) can be set instead. It stays in the app's memory for that browser session; tick **Remember on this computer** to keep it in the operating system's credential store (Windows Credential Manager, through `keyring`), never in a file. **Test** checks the key with OpenAI and **Forget** removes it. The panel also sets the OpenAI model, whether earlier questions are sent as context, and OpenFOAM's cores per case, cases at once and iterations (900, or 3000 to match the stored runs), and checks that Docker is running.
 - **Live airflow:** while any OpenFOAM run started from the app is going (yours or the surgeon agent's), the Airway tab shows the solver as it works instead of a waiting message. Every 25 iterations the case samples the wall pressure over the whole airway and the air speed on three planes (one sagittal plane through each nasal cavity, one axial plane through both). The 3D view shows them on the airway, and a chart below plots the resistance at each iteration, computed from the nostril flows, together with the solver residuals. The top bar gives the iteration, the flow and the current resistance. These are the steady solver's intermediate states on its way to the result, not a time-accurate breath, and the inlet pressure ramps up over the first 300 iterations. `nasal.live` reads the running case and keeps only the newest sample on disk. Stored and command-line runs do not sample, so their results are unchanged.
 - **Surgeon agent** (Commands): type a goal and press **Let the agent operate**. The agent reads where the resistance sits, operates with the parametric techniques below, runs OpenFOAM on its airway, undoes what does not help and finishes with a verified result. The 3D view redraws after every cut (added air in green), shows each of the agent's OpenFOAM checks live and is recolored after every result. The console lists each tool call and ends with the agent's summary, which passes the number check or is replaced by a code summary.

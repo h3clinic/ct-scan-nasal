@@ -30,6 +30,7 @@ nasal-studio = "nasal.studio:main"
 nasal-distill = "nasal.distill:main"
 nasal-campaign = "nasal.campaign:main"
 nasal-segment = "nasal.cli:segment_main"
+nasal-setup = "nasal.setup_check:main"
 
 [build-system]
 requires = ["setuptools>=68"]
