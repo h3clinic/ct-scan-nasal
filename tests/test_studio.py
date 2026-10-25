@@ -57,3 +57,16 @@ def test_surgeon_labels_show_depth_in_mm_or_layers():
     assert studio.surgeon_label({"technique": "septoplasty", "side": "both", "depth_mm": 0.6}) == "septoplasty (0.6 mm)"
     assert studio.surgeon_label({"undo": {"technique": "widen", "side": "left", "depth": 1, "region": "choana",
                                           "direction": "vertical"}}) == "undo widen choana vertical (left, 1 layer)"
+
+
+def test_actions_work_without_a_layout_or_nasalseg():
+    actions = studio.make_actions()
+    for name in ("reconstruct", "simulate_original", "plan_once", "plan_all", "show_original", "agent_operate", "ask",
+                 "spectate", "tick", "toggle_play", "save_timeline", "load_timeline", "watch_current", "load_prefs",
+                 "set_key", "run_setup_checks"):
+        assert callable(actions[name]), name
+    assert actions["ids"] == [] and actions["default"] is None
+    st, *_, info, status = actions["reconstruct"](None, None)
+    assert st == {} and "Upload a CT scan" in info
+    app = studio.build_app()
+    assert app.actions.keys() == actions.keys()

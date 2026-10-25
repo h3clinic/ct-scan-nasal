@@ -231,10 +231,39 @@ def console_html(entries: list[dict]) -> str:
     return '<div class="messages">' + ("".join(rows) or '<div class="msg system"><div>Ask the agents about the airway or a surgery plan.</div></div>') + "</div>"
 
 
-def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, sim_path: Path = agents.PATIENTS_PATH,
-              segment_model: Path | None = None,
-              procs: int | None = None, iterations: int = FAST_ITERATIONS):
-    import gradio as gr
+def make_actions(images_dir: Path | None = None, labels_dir: Path | None = None, sim_path: Path = agents.PATIENTS_PATH,
+                 segment_model: Path | None = None, procs: int | None = None, iterations: int = FAST_ITERATIONS) -> dict:
+    """Everything the studio can do, as functions to wire into a layout (the layout itself is being redesigned).
+
+    Returns a dict of handlers, plus `ids` (NasalSeg patients), `default` (the patient to open first) and `flow`
+    (the OpenFOAM source shared with the agents). Gradio state the handlers expect: `st` (the open airway, a dict;
+    start with {}), `memory` and `log` (lists; the console), `prefs` (dict; API key and model), and for the
+    spectator `sp` = {"step": 0, "playing": False, "loaded": None, "drawn": None}. What each one was wired to:
+
+    - reconstruct(pid, upload) -> (st, plot, region table, plan ranking, info, status): open a NasalSeg patient, or
+      an uploaded CT (DICOM files/zip, NIfTI, NRRD; segmented automatically, full-head scans cropped to the nose)
+    - simulate_original(st) -> generator of (plot, region table, plan ranking, info, status, live chart): OpenFOAM
+      on the open airway, streamed live (skipped when a stored run exists)
+    - show_original(st) -> (plot, region table, plan ranking, info)
+    - plan_once(st, procedure labels) / plan_all(st, procedure labels) -> generator of
+      (st, plot, region table, plan ranking, info, status, live chart): OpenFOAM on the ticked plan, or all 7
+    - agent_operate(st, goal, prefs, log) -> generator of
+      (plot, region table, plan ranking, info, status, console html, log, live chart): the surgeon agent
+    - ask(pid, question, memory, log, prefs) -> generator of (console html, log, memory, question box, memory note):
+      the local model when installed, otherwise the cloud agents with an API key
+    - spectate(st, sp, step=None, follow=False, advance=0, force=False), tick(st, sp, follow), toggle_play(st, sp)
+      -> (sp, plot, detail, step slider, resistance chart, timeline table, play button label);
+      save_timeline(st, sp) -> (note, saved list); load_timeline(name, st, sp) and watch_current(st, sp)
+      -> (the seven above, follow checkbox, note)
+    - load_prefs() -> (prefs, key status, model label, provider, model, API address); set_key(key, remember,
+      provider, model, address, prefs) -> (prefs, key status, key box, model label, provider, model);
+      check_key(prefs) -> key status; drop_key(prefs) -> (prefs, key status, model label);
+      pick_provider(name, prefs) -> (prefs, model, model label, key status); set_pref(name) -> f(value, prefs) -> prefs;
+      model_text(prefs) -> model label
+    - run_setup_checks() -> (setup list markdown, banner update): `nasal.setup_check` with plain fixes
+    - console_html(entries) (module level) draws the console; PROCEDURE_NAMES lists the procedure labels
+    """
+    import gradio as gr  # handlers use gr.update and gr.Error
 
     from . import segment as sg
 
@@ -630,282 +659,187 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
         shown = [*log, steps, answer]
         yield console_html(shown), shown, memory, "", "Local model: nothing is sent off this computer."
 
+
+    def watched(st, sp):
+        return sp.get("loaded") or (st or {}).get("timeline")
+
+    def spectate(st, sp, step=None, follow=False, advance=0, force=False):
+        """Draw step `step` of the watched timeline; only what changed is sent to the browser."""
+        tl = watched(st, sp)
+        if tl is None or not tl.events:
+            return (sp, *([gr.update()] * 6))
+        last = len(tl.events) - 1
+        if follow and not sp.get("loaded"):
+            step = last
+        step = min(max(0, int(sp["step"] if step is None else step) + advance), last)
+        playing = sp["playing"] and step < last
+        key = (id(tl), step, len(tl.events))
+        sp = {**sp, "step": step, "playing": playing}
+        if key == sp.get("drawn") and not force:
+            return (sp, *([gr.update()] * 6))
+        redraw = (id(tl), step) != (sp.get("drawn") or (None, None, None))[:2] or force
+        sp["drawn"] = key
+        event = tl.events[step]
+        figure = gr.update()
+        if redraw:
+            tags, result = tl.tags_at(step), tl.result_at(step)
+            surface = view.tags_surface(tags, tl.spacing, tl.origin)
+            title = (f"{tl.name} · step {step} · {event['actor']}: {event['text'][:60]}"
+                     + (f" · OpenFOAM {result['total_resistance']:.3f} Pa·s/cm³" if result else ""))
+            figure = plot_theme(airway_figure(surface, title, result, tl.changes_at(step)))
+        return (sp, figure, spectator.detail_markdown(event), gr.update(maximum=max(last, 1), value=step),
+                plot_theme(spectator.series_figure(tl, step)), tl.table(), "❚❚ Pause" if playing else "▶ Play")
+
+    def tick(st, sp, follow):
+        if sp.get("playing"):
+            return spectate(st, sp, advance=1)
+        return spectate(st, sp, follow=follow)
+
+    def toggle_play(st, sp):
+        tl = watched(st, sp)
+        at_end = tl is not None and sp["step"] >= len(tl.events) - 1
+        sp = {**sp, "playing": not sp["playing"]}
+        return spectate(st, sp, step=0 if (sp["playing"] and at_end) else None, force=True)
+
+    def save_timeline(st, sp):
+        tl = watched(st, sp)
+        if tl is None or not tl.events:
+            raise gr.Error("nothing to save yet")
+        path = tl.save()
+        return f"Saved {path}.", gr.update(choices=[p.name for p in spectator.saved_timelines()], value=path.name)
+
+    def load_timeline(name, st, sp):
+        if not name:
+            raise gr.Error("pick a saved session")
+        sp = {**sp, "loaded": spectator.Timeline.load(spectator.SAVE_DIR / name), "playing": False, "drawn": None}
+        return (*spectate(st, sp, step=0, force=True), False, f"Watching {name} (saved).")
+
+    def watch_current(st, sp):
+        sp = {**sp, "loaded": None, "drawn": None}
+        return (*spectate(st, sp, follow=True, force=True), True, "Watching this airway's session.")
+
+    def default_model(name: str) -> str:
+        return agents.OPENAI_MODEL if name == "OpenAI" else providers.PROVIDERS[name].default_model
+
+    def key_text(prefs) -> str:
+        name = prefs.get("provider") or providers.DEFAULT
+        if prefs.get("api_key"):
+            where = "saved on this computer" if prefs.get("saved") else "for this session"
+            return f"{name} key {settings.mask(prefs['api_key'])}, {where}."
+        if name == "OpenAI" and os.environ.get("OPENAI_API_KEY"):
+            return f"OpenAI key {settings.mask(os.environ['OPENAI_API_KEY'])} from the OPENAI_API_KEY variable."
+        return "No API key yet: paste one below and press Use key."
+
+    def model_text(prefs) -> str:
+        if local_ready():
+            return f"Answers: local {distill.STUDENT_MODEL}"
+        name = prefs.get("provider") or providers.DEFAULT
+        if prefs.get("api_key") or (name == "OpenAI" and os.environ.get("OPENAI_API_KEY")):
+            return f"{name} · {prefs.get('model') or default_model(name)}"
+        return "No key: open ⚙ Settings"
+
+    def load_prefs():
+        saved = settings.load_saved() or {}
+        name = saved.get("provider") or providers.DEFAULT
+        prefs = {"api_key": saved.get("key"), "saved": bool(saved), "provider": name, "base_url": saved.get("base_url"),
+                 "model": default_model(name)}
+        return prefs, key_text(prefs), model_text(prefs), name, prefs["model"], saved.get("base_url") or ""
+
+    def set_key(text, remember, chosen, model, base_url, prefs):
+        key = (text or "").strip()
+        custom = chosen == "Custom (OpenAI-compatible)"
+        if not key or any(c.isspace() for c in key) or (not custom and not settings.looks_like_key(key)):
+            raise gr.Error("That does not look like an API key.")  # a local custom server may take any word
+        detected = providers.detect(key)
+        name = chosen if detected == "Custom (OpenAI-compatible)" else detected
+        if model in ("", default_model(prefs.get("provider") or providers.DEFAULT)):
+            model = default_model(name)  # follow the provider unless the user typed a model
+        saved = remember and settings.save(key, name, base_url or None)
+        prefs = {**prefs, "api_key": key, "saved": bool(saved), "provider": name, "model": model,
+                 "base_url": base_url or None}
+        note = "" if saved or not remember else " Could not save it on this computer; it is kept for this session."
+        return prefs, key_text(prefs) + note, "", model_text(prefs), name, model
+
+    def check_key(prefs):
+        key = prefs.get("api_key") or os.environ.get("OPENAI_API_KEY")
+        if not key:
+            raise gr.Error("add a key first")
+        return key_text(prefs) + " " + settings.test_key(key, prefs.get("provider") or providers.DEFAULT,
+                                                         prefs.get("base_url"))[1]
+
+    def drop_key(prefs):
+        settings.forget_saved()
+        prefs = {**prefs, "api_key": None, "saved": False}
+        return prefs, key_text(prefs), model_text(prefs)
+
+    def pick_provider(name, prefs):
+        prefs = {**prefs, "provider": name, "model": default_model(name)}
+        return prefs, prefs["model"], model_text(prefs), key_text(prefs)
+
+    def set_pref(name):
+        return lambda value, prefs: {**prefs, name: value}
+
+    def run_setup_checks():
+        """The setup list for Settings, and a banner when something the studio needs is missing."""
+        items = setup_check.checks(segment_model, images_dir, labels_dir, sim_path)
+        missing = [i for i in items if i["status"] == "missing"]
+        banner = ("**Setup needs attention:** " + "; ".join(f"{i['name']} ({i['detail']}): {i['without']}"
+                                                          for i in missing)
+                  + ". Open ⚙ Settings → Setup for the fix.") if missing else ""
+        return setup_check.markdown(items), gr.update(value=banner, visible=bool(missing))
+
+    return {
+        "ids": ids, "default": default, "flow": flow,
+        "ready_text": ready_text,
+        "openfoam_results": openfoam_results,
+        "load_airway": load_airway,
+        "original_view": original_view,
+        "reconstruct": reconstruct,
+        "live_view": live_view,
+        "run_cases": run_cases,
+        "run_live": run_live,
+        "simulate_original": simulate_original,
+        "surgery_view": surgery_view,
+        "show_original": show_original,
+        "simulate_plans": simulate_plans,
+        "plan_once": plan_once,
+        "plan_all": plan_all,
+        "llm": llm,
+        "local_ready": local_ready,
+        "has_key": has_key,
+        "ask": ask,
+        "agent_operate": agent_operate,
+        "ask_local": ask_local,
+        "watched": watched,
+        "spectate": spectate,
+        "tick": tick,
+        "toggle_play": toggle_play,
+        "save_timeline": save_timeline,
+        "load_timeline": load_timeline,
+        "watch_current": watch_current,
+        "default_model": default_model,
+        "key_text": key_text,
+        "model_text": model_text,
+        "load_prefs": load_prefs,
+        "set_key": set_key,
+        "check_key": check_key,
+        "drop_key": drop_key,
+        "pick_provider": pick_provider,
+        "set_pref": set_pref,
+        "run_setup_checks": run_setup_checks,
+    }
+
+
+def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, sim_path: Path = agents.PATIENTS_PATH,
+              segment_model: Path | None = None, procs: int | None = None, iterations: int = FAST_ITERATIONS):
+    """The studio window: an empty page while its layout is being redesigned. Every action is ready in
+    `make_actions` (also attached as `app.actions`) to wire into the new layout."""
+    import gradio as gr
+
+    actions = make_actions(images_dir, labels_dir, sim_path, segment_model, procs, iterations)
     with gr.Blocks(title="Nasal0", fill_width=True) as app:
-        gr.HTML('<div id="window-bar"><span class="mark">N0</span><strong>NASAL0</strong>'
-                '<span class="sub">CT → airway → OpenFOAM → virtual surgery → agents</span></div>')
-        state = gr.State({})
-        memory = gr.State([])
-        log = gr.State([])
-        prefs = gr.State({})  # this browser session's agent settings, including the OpenAI key
-        with gr.Sidebar(label="Settings", open=False, position="right", width=330, elem_id="settings") as settings_bar:
-            gr.HTML('<div class="section-head"><span>Language model</span></div>')
-            key_status = gr.Markdown(elem_classes="note")
-            key_box = gr.Textbox(label="API key (OpenAI, Claude, Gemini, OpenRouter, …)", type="password",
-                                 placeholder="Paste your key", max_lines=1)
-            provider_pick = gr.Dropdown(list(providers.PROVIDERS), value=providers.DEFAULT, label="Provider (set from the key)")
-            model_box = gr.Textbox(value=agents.OPENAI_MODEL, label="Model", max_lines=1)
-            base_url_box = gr.Textbox(label="API address (custom provider only)", placeholder="https://…/v1", max_lines=1)
-            remember_key = gr.Checkbox(value=False, interactive=settings.can_remember(),
-                                       label="Remember on this computer (Windows Credential Manager)"
-                                       if settings.can_remember() else "Remember on this computer (needs keyring)")
-            with gr.Row():
-                use_key = gr.Button("Use key", variant="primary", min_width=60)
-                test_key = gr.Button("Test", elem_classes="signal", min_width=60)
-                forget_key = gr.Button("Forget", elem_classes="signal", min_width=60)
-            gr.Markdown("Used by the surgeon agent, and by the console when the local model is not installed. The "
-                        "key stays in this app's memory for your browser session, and in the credential store only if "
-                        "you tick Remember. It is sent only to that provider and never shown in full.",
-                        elem_classes="note")
-            gr.HTML('<div class="section-head"><span>Setup</span></div>')
-            setup_info = gr.Markdown("Checking what this computer has…", elem_classes="note")
-            recheck = gr.Button("Recheck setup", elem_classes="signal")
-        with gr.Row(elem_id="shell"):
-            with gr.Column(elem_id="sidebar", scale=0, min_width=258):
-                gr.HTML(f'<div class="section-head"><span>Patients</span><span class="count">{len(ids)}</span></div>')
-                pid = gr.Dropdown(ids, value=default, label="NasalSeg CT", container=True)
-                build = gr.Button("Open airway", variant="primary", elem_classes="signal")
-                gr.HTML('<div class="section-head"><span>Upload</span></div>')
-                upload = gr.File(label="CT scan: DICOM (.zip or slice files), NIfTI or NRRD", file_count="multiple",
-                                 height=110)
-                with gr.Accordion("ABOUT THE MODEL", open=False):
-                    gr.Markdown("Rigid walls, one steady breath at 150 Pa, voxel walls. Every resistance comes "
-                                "from OpenFOAM. Decision thresholds are placeholders until an ENT reviews them.",
-                                elem_classes="note")
-            with gr.Column(elem_id="workspace", scale=1):
-                with gr.Row(elem_id="topbar"):
-                    status = gr.Markdown(ready_text(), elem_id="status")
-                    open_settings = gr.Button("⚙ Settings", elem_classes="signal", scale=0, min_width=110)
-                setup_banner = gr.Markdown(visible=False, elem_id="setup-banner")
-                with gr.Row(elem_id="session"):
-                    with gr.Column(elem_id="monitor", scale=1):
-                        with gr.Tabs():
-                            with gr.Tab("Airway"):
-                                gr.HTML('<div class="pane-title"><span>Airway</span><span>OpenFOAM resistance, Pa·s/cm³ · '
-                                        'live while OpenFOAM runs</span></div>')
-                                plot = gr.Plot(show_label=False)
-                                live_chart = gr.Plot(show_label=False)
-                                info = gr.Markdown(elem_classes="info")
-                                with gr.Row():
-                                    table = gr.Dataframe(label="Regions (OpenFOAM)", interactive=False)
-                                    ranking = gr.Dataframe(label="All 7 plans (OpenFOAM)", interactive=False)
-                            with gr.Tab("Spectator"):
-                                gr.HTML('<div class="pane-title"><span>Spectator</span><span>every change, by you or the '
-                                        'surgeon agent, step by step</span></div>')
-                                spec_plot = gr.Plot(show_label=False)
-                                spec_detail = gr.Markdown(elem_classes="info")
-                                with gr.Row():
-                                    spec_prev = gr.Button("◀ Step", elem_classes="signal", min_width=70)
-                                    spec_play = gr.Button("▶ Play", elem_classes="signal", min_width=70)
-                                    spec_next = gr.Button("Step ▶", elem_classes="signal", min_width=70)
-                                    spec_follow = gr.Checkbox(value=True, label="Follow live")
-                                spec_step = gr.Slider(0, 1, value=0, step=1, label="Step")
-                                spec_series = gr.Plot(show_label=False)
-                                spec_table = gr.Dataframe(label="Timeline", interactive=False, max_height=260)
-                                with gr.Row():
-                                    spec_saved = gr.Dropdown([], label="Saved sessions", scale=3)
-                                    spec_load = gr.Button("Watch saved", elem_classes="signal", scale=1)
-                                    spec_live = gr.Button("Watch this airway", elem_classes="signal", scale=1)
-                                    spec_save = gr.Button("Save session", elem_classes="signal", scale=1)
-                                spec_note = gr.Markdown(elem_classes="note")
-                                spec_timer = gr.Timer(1.5)
-                    with gr.Column(elem_id="controls", scale=0, min_width=244):
-                        gr.HTML('<div class="section-head"><span>Commands</span></div>')
-                        air_btn = gr.Button("Run airflow", elem_classes="signal")
-                        procedures = gr.CheckboxGroup(list(PROCEDURE_NAMES), value=["Turbinate reduction", "Valve repair"],
-                                                      label="Procedures")
-                        sim_btn = gr.Button("Run airflow on plan", elem_classes="signal")
-                        all_btn = gr.Button("Run all 7 plans", elem_classes="signal")
-                        reset_btn = gr.Button("Show original airway", elem_classes="signal")
-                        gr.HTML('<div class="section-head"><span>Surgeon agent</span></div>')
-                        goal = gr.Textbox(value="Lower the resistance with the least surgery", label="Goal", lines=2)
-                        surgeon_btn = gr.Button("Let the agent operate", variant="primary", elem_classes="signal")
-                with gr.Column(elem_id="console"):
-                    gr.HTML('<div class="pane-title"><span>Console · agents</span><span>memory stays in this session</span></div>')
-                    messages = gr.HTML(console_html([]))
-                    with gr.Row(elem_id="composer"):
-                        question = gr.Textbox(placeholder="Ask the agents, e.g. which plan lowers resistance most and why?",
-                                              show_label=False, scale=5, container=False)
-                        model_label = gr.Markdown(elem_classes="note", elem_id="model-label")
-                        send = gr.Button("Send", variant="primary", scale=0, min_width=70)
-                        clear = gr.Button("Clear", scale=0, min_width=70, elem_classes="signal")
-                    memory_info = gr.Markdown("Only the patient id, your question and computed numbers are sent to the "
-                                              "model, never the CT. OpenAI requests use store=False; what any provider keeps "
-                                              "is set by its own data policy.", elem_classes="note")
-
-        view_out = [plot, table, ranking, info]
-        build.click(reconstruct, [pid, upload], [state, *view_out, status])
-        app.load(reconstruct, [pid, upload], [state, *view_out, status])
-        air_btn.click(simulate_original, [state], [*view_out, status, live_chart])
-        reset_btn.click(show_original, [state], view_out)
-        sim_btn.click(plan_once, [state, procedures], [state, *view_out, status, live_chart])
-        all_btn.click(plan_all, [state, procedures], [state, *view_out, status, live_chart])
-        for trigger in (send.click, question.submit):
-            trigger(ask, [pid, question, memory, log, prefs], [messages, log, memory, question, memory_info])
-        clear.click(lambda: (console_html([]), [], [], "Session memory cleared."), None, [messages, log, memory, memory_info])
-        surgeon_btn.click(agent_operate, [state, goal, prefs, log], [*view_out, status, messages, log, live_chart])
-
-        # ---- spectator: replay the airway's timeline (or a saved one) step by step
-        spec = gr.State({"step": 0, "playing": False, "loaded": None, "drawn": None})
-        spec_out = [spec, spec_plot, spec_detail, spec_step, spec_series, spec_table, spec_play]
-
-        def watched(st, sp):
-            return sp.get("loaded") or (st or {}).get("timeline")
-
-        def spectate(st, sp, step=None, follow=False, advance=0, force=False):
-            """Draw step `step` of the watched timeline; only what changed is sent to the browser."""
-            tl = watched(st, sp)
-            if tl is None or not tl.events:
-                return (sp, *([gr.update()] * 6))
-            last = len(tl.events) - 1
-            if follow and not sp.get("loaded"):
-                step = last
-            step = min(max(0, int(sp["step"] if step is None else step) + advance), last)
-            playing = sp["playing"] and step < last
-            key = (id(tl), step, len(tl.events))
-            sp = {**sp, "step": step, "playing": playing}
-            if key == sp.get("drawn") and not force:
-                return (sp, *([gr.update()] * 6))
-            redraw = (id(tl), step) != (sp.get("drawn") or (None, None, None))[:2] or force
-            sp["drawn"] = key
-            event = tl.events[step]
-            figure = gr.update()
-            if redraw:
-                tags, result = tl.tags_at(step), tl.result_at(step)
-                surface = view.tags_surface(tags, tl.spacing, tl.origin)
-                title = (f"{tl.name} · step {step} · {event['actor']}: {event['text'][:60]}"
-                         + (f" · OpenFOAM {result['total_resistance']:.3f} Pa·s/cm³" if result else ""))
-                figure = plot_theme(airway_figure(surface, title, result, tl.changes_at(step)))
-            return (sp, figure, spectator.detail_markdown(event), gr.update(maximum=max(last, 1), value=step),
-                    plot_theme(spectator.series_figure(tl, step)), tl.table(), "❚❚ Pause" if playing else "▶ Play")
-
-        def tick(st, sp, follow):
-            if sp.get("playing"):
-                return spectate(st, sp, advance=1)
-            return spectate(st, sp, follow=follow)
-
-        def toggle_play(st, sp):
-            tl = watched(st, sp)
-            at_end = tl is not None and sp["step"] >= len(tl.events) - 1
-            sp = {**sp, "playing": not sp["playing"]}
-            return spectate(st, sp, step=0 if (sp["playing"] and at_end) else None, force=True)
-
-        def save_timeline(st, sp):
-            tl = watched(st, sp)
-            if tl is None or not tl.events:
-                raise gr.Error("nothing to save yet")
-            path = tl.save()
-            return f"Saved {path}.", gr.update(choices=[p.name for p in spectator.saved_timelines()], value=path.name)
-
-        def load_timeline(name, st, sp):
-            if not name:
-                raise gr.Error("pick a saved session")
-            sp = {**sp, "loaded": spectator.Timeline.load(spectator.SAVE_DIR / name), "playing": False, "drawn": None}
-            return (*spectate(st, sp, step=0, force=True), False, f"Watching {name} (saved).")
-
-        def watch_current(st, sp):
-            sp = {**sp, "loaded": None, "drawn": None}
-            return (*spectate(st, sp, follow=True, force=True), True, "Watching this airway's session.")
-
-        spec_timer.tick(tick, [state, spec, spec_follow], spec_out, show_progress="hidden")
-        # moving by hand stops following the live end of the timeline
-        spec_step.release(lambda st, sp, v: (*spectate(st, sp, step=v), False), [state, spec, spec_step], [*spec_out, spec_follow])
-        spec_prev.click(lambda st, sp: (*spectate(st, {**sp, "playing": False}, advance=-1), False), [state, spec],
-                        [*spec_out, spec_follow])
-        spec_next.click(lambda st, sp: (*spectate(st, {**sp, "playing": False}, advance=1), False), [state, spec],
-                        [*spec_out, spec_follow])
-        spec_play.click(toggle_play, [state, spec], spec_out)
-        spec_save.click(save_timeline, [state, spec], [spec_note, spec_saved])
-        spec_load.click(load_timeline, [spec_saved, state, spec], [*spec_out, spec_follow, spec_note])
-        spec_live.click(watch_current, [state, spec], [*spec_out, spec_follow, spec_note])
-        app.load(lambda: gr.update(choices=[p.name for p in spectator.saved_timelines()]), None, [spec_saved])
-        spec_saved.focus(lambda: gr.update(choices=[p.name for p in spectator.saved_timelines()]), None, [spec_saved])
-
-        # ---- settings
-        def default_model(name: str) -> str:
-            return agents.OPENAI_MODEL if name == "OpenAI" else providers.PROVIDERS[name].default_model
-
-        def key_text(prefs) -> str:
-            name = prefs.get("provider") or providers.DEFAULT
-            if prefs.get("api_key"):
-                where = "saved on this computer" if prefs.get("saved") else "for this session"
-                return f"{name} key {settings.mask(prefs['api_key'])}, {where}."
-            if name == "OpenAI" and os.environ.get("OPENAI_API_KEY"):
-                return f"OpenAI key {settings.mask(os.environ['OPENAI_API_KEY'])} from the OPENAI_API_KEY variable."
-            return "No API key yet: paste one below and press Use key."
-
-        def model_text(prefs) -> str:
-            if local_ready():
-                return f"Answers: local {distill.STUDENT_MODEL}"
-            name = prefs.get("provider") or providers.DEFAULT
-            if prefs.get("api_key") or (name == "OpenAI" and os.environ.get("OPENAI_API_KEY")):
-                return f"{name} · {prefs.get('model') or default_model(name)}"
-            return "No key: open ⚙ Settings"
-
-        def load_prefs():
-            saved = settings.load_saved() or {}
-            name = saved.get("provider") or providers.DEFAULT
-            prefs = {"api_key": saved.get("key"), "saved": bool(saved), "provider": name, "base_url": saved.get("base_url"),
-                     "model": default_model(name)}
-            return prefs, key_text(prefs), model_text(prefs), name, prefs["model"], saved.get("base_url") or ""
-
-        def set_key(text, remember, chosen, model, base_url, prefs):
-            key = (text or "").strip()
-            custom = chosen == "Custom (OpenAI-compatible)"
-            if not key or any(c.isspace() for c in key) or (not custom and not settings.looks_like_key(key)):
-                raise gr.Error("That does not look like an API key.")  # a local custom server may take any word
-            detected = providers.detect(key)
-            name = chosen if detected == "Custom (OpenAI-compatible)" else detected
-            if model in ("", default_model(prefs.get("provider") or providers.DEFAULT)):
-                model = default_model(name)  # follow the provider unless the user typed a model
-            saved = remember and settings.save(key, name, base_url or None)
-            prefs = {**prefs, "api_key": key, "saved": bool(saved), "provider": name, "model": model,
-                     "base_url": base_url or None}
-            note = "" if saved or not remember else " Could not save it on this computer; it is kept for this session."
-            return prefs, key_text(prefs) + note, "", model_text(prefs), name, model
-
-        def check_key(prefs):
-            key = prefs.get("api_key") or os.environ.get("OPENAI_API_KEY")
-            if not key:
-                raise gr.Error("add a key first")
-            return key_text(prefs) + " " + settings.test_key(key, prefs.get("provider") or providers.DEFAULT,
-                                                             prefs.get("base_url"))[1]
-
-        def drop_key(prefs):
-            settings.forget_saved()
-            prefs = {**prefs, "api_key": None, "saved": False}
-            return prefs, key_text(prefs), model_text(prefs)
-
-        def pick_provider(name, prefs):
-            prefs = {**prefs, "provider": name, "model": default_model(name)}
-            return prefs, prefs["model"], model_text(prefs), key_text(prefs)
-
-        def set_pref(name):
-            return lambda value, prefs: {**prefs, name: value}
-
-        app.load(load_prefs, None, [prefs, key_status, model_label, provider_pick, model_box, base_url_box])
-        open_settings.click(lambda: gr.Sidebar(open=True), None, [settings_bar])
-        key_inputs = [key_box, remember_key, provider_pick, model_box, base_url_box, prefs]
-        key_outputs = [prefs, key_status, key_box, model_label, provider_pick, model_box]
-        use_key.click(set_key, key_inputs, key_outputs)
-        key_box.submit(set_key, key_inputs, key_outputs)
-        test_key.click(check_key, [prefs], [key_status])
-        forget_key.click(drop_key, [prefs], [prefs, key_status, model_label])
-        provider_pick.input(pick_provider, [provider_pick, prefs], [prefs, model_box, model_label, key_status])
-        for comp, name in ((model_box, "model"), (base_url_box, "base_url")):
-            comp.change(set_pref(name), [comp, prefs], [prefs])
-        model_box.change(lambda p: model_text(p), [prefs], [model_label])
-
-        def run_setup_checks():
-            """The setup list for Settings, and a banner when something the studio needs is missing."""
-            items = setup_check.checks(segment_model, images_dir, labels_dir, sim_path)
-            missing = [i for i in items if i["status"] == "missing"]
-            banner = ("**Setup needs attention:** " + "; ".join(f"{i['name']} ({i['detail']}): {i['without']}"
-                                                              for i in missing)
-                      + ". Open ⚙ Settings → Setup for the fix.") if missing else ""
-            return setup_check.markdown(items), gr.update(value=banner, visible=bool(missing))
-
-        app.load(run_setup_checks, None, [setup_info, setup_banner])
-        recheck.click(run_setup_checks, None, [setup_info, setup_banner])
+        gr.HTML('<div id="window-bar"><span class="mark">N0</span><strong>NASAL0</strong></div>')
+    app.actions = actions
     return app
 
 

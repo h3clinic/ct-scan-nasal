@@ -21,7 +21,7 @@ pytest
 
 ### Quick start (studio)
 
-Windows: double-click `start-studio.bat`. macOS or Linux: `./start-studio.sh`. The first run creates a Python environment in `~/.venvs/ct-scan-nasal` and installs the studio. Every run prints the setup check and opens the studio in the browser, kept awake while it runs. Upload a CT scan (DICOM, NIfTI or NRRD) to start. Set `NASALSEG_ROOT` to a NasalSeg folder (with `images/` and `labels/`) to list its patients too. `--update` reinstalls after pulling new code, and `--no-browser` starts without opening a browser.
+Windows: double-click `start-studio.bat`. macOS or Linux: `./start-studio.sh`. The first run creates a Python environment in `~/.venvs/ct-scan-nasal` and installs the studio. Every run prints the setup check and opens the studio in the browser, kept awake while it runs. The window is an empty page while its layout is being redesigned (see Studio). Set `NASALSEG_ROOT` to a NasalSeg folder (with `images/` and `labels/`) to list its patients too. `--update` reinstalls after pulling new code, and `--no-browser` starts without opening a browser.
 
 What the studio uses, and what still works without it (checked at start, and in Settings → Setup with **Recheck**):
 
@@ -306,7 +306,7 @@ nasal-studio                                                     # opens at http
 nasal-studio --images nasalseg/images --labels nasalseg/labels    # also lists the NasalSeg patients
 ```
 
-One window, laid out like the [VOCO](https://github.com/h3clinic/VOCO) desktop app: patients on the left, the airway in the middle, commands on the right and the agents as the console below.
+**The studio window is an empty page while its layout is being redesigned.** Every feature below still works and is ready to wire into the new layout: `nasal.studio.make_actions()` returns each one as a function, with the inputs and outputs it expects listed in its docstring (also attached to the app as `app.actions`). The previous layout (patients on the left, the airway in the middle, commands on the right, the console below) is in commit 7a5a8a7.
 
 - **CT to airway:** upload a CT scan: DICOM (a .zip of the series or the slice files, which may have no extension), NIfTI or NRRD. A full-head scan is cropped to the nose (see Any CT in), and the info panel says how the scan was read and cropped. With `--images` and `--labels`, the NasalSeg patients are listed too. NasalSeg patients open with their expert labels; uploaded scans are segmented automatically (needs `data/segment_model.joblib` from `nasal-segment train`).
 - **Airflow:** every resistance shown comes from OpenFOAM: the stored run where one exists, otherwise **Run airflow** starts one in Docker. The patient surrogate is not used here, because on some airways it is off by more than 30% (P022: 0.141 against OpenFOAM's 0.263 Pa·s/cm³).

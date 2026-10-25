@@ -2,6 +2,8 @@
 
 Everything for a live presentation: setup, the word-for-word script with clicks, backups, likely questions and the numbers to remember.
 
+**Note:** the studio's layout is being redesigned, and its window is currently an empty page. This script follows the previous layout (commit 7a5a8a7).
+
 ## 30 minutes before
 
 1. **Network:** connect to your phone hotspot if the venue's Wi-Fi blocks APIs. Check with `curl -s https://api.openai.com/v1/models` (any reply means it isn't blocked).

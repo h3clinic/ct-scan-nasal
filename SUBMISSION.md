@@ -21,7 +21,7 @@ When we tested virtual surgery on 10 obstructed real airways, the map-driven pla
 | Fast surrogate | Power law per region on six measured geometry numbers per side | 16.2% mean side error (cross-validated, duplicate scans kept in one fold) against 30.1% for "average patient"; under 0.3 ms per prediction |
 | Four agents | Case → Planner → Critic → Explainer, one OpenAI model, each limited to its own tools | Reliability not yet measured on OpenAI |
 | Virtual surgery | Turbinate reduction, valve repair and septoplasty applied to the voxel airway, scored by OpenFOAM | Workflow++ reached the best plan's drop in 10/10; standard rule 1/10 |
-| App | Gradio studio: CT to airway, live OpenFOAM, virtual surgery, the surgeon agent and a spectator replay | `nasal-studio`, `start-studio.bat` / `start-studio.sh` |
+| App | Gradio studio: CT to airway, live OpenFOAM, virtual surgery, the surgeon agent and a spectator replay (layout being redesigned; the features are in `nasal.studio.make_actions`) | `nasal-studio`, `start-studio.bat` / `start-studio.sh` |
 
 ## Tracks
 
