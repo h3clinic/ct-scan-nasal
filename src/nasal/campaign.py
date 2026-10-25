@@ -206,8 +206,12 @@ def run_case(case: mutations.Case, execute: Executor, client, model: str, work: 
         try:
             out = surgeon.run_surgeon(session, goal, client, model, provider)
         except Exception as err:  # a model or OpenFOAM failure counts as a failed attempt
-            log(f"{case.case_id} attempt {attempt}: failed ({type(err).__name__})")
-            attempts.append({"attempt": attempt, "error": type(err).__name__})
+            import traceback
+
+            where = traceback.extract_tb(err.__traceback__)[-1]
+            detail = f"{type(err).__name__}: {str(err)[:160]} ({Path(where.filename).name}:{where.lineno})"
+            log(f"{case.case_id} attempt {attempt}: failed ({detail})")
+            attempts.append({"attempt": attempt, "error": type(err).__name__, "detail": detail})
             continue
         tried = [drop_pct(before, r) for k, r in session.simulated.items() if k != session.key([])]
         best_known = float(max([best_known, *tried]))
