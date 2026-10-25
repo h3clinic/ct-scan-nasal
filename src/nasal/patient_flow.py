@@ -16,7 +16,6 @@ import pandas as pd
 
 from . import anatomy
 from .decision import patient as ps
-from .decision.rules import PLACEHOLDER_THRESHOLDS
 
 # Runs started here stop at 900 iterations instead of 3000: in the 13 stored 3000-iteration patient runs, total
 # flow averaged up to iteration 600 was already within 0.11% of the final value, and P022 run at 900 iterations
@@ -55,15 +54,11 @@ def run_openfoam(tags: np.ndarray, spacing: np.ndarray, origin: np.ndarray, cuts
 
 
 def plus_plus_from_totals(totals: dict[tuple, float]) -> tuple[str, ...]:
-    """Workflow++ on simulated totals: the smallest plan whose resistance drop reaches 90% of the best plan's
-    (placeholder threshold); no surgery when no plan lowers resistance. `totals` maps plans, () included."""
-    before = totals[()]
-    gains = {plan: before - r for plan, r in totals.items() if plan}
-    best = max(gains.values())
-    if best <= 0:
-        return ()
-    good = [p for p, g in gains.items() if g >= PLACEHOLDER_THRESHOLDS["near_best_gain"] * best]
-    return min(good, key=lambda p: (len(p), -gains[p]))
+    """Workflow++ on simulated totals (`decision.patient.choose_plan`): the smallest plan near the best one, or
+    no surgery below the minimum benefit. `totals` maps plans, () included."""
+    from .decision.patient import choose_plan
+
+    return choose_plan(totals)
 
 
 class PatientFlow:

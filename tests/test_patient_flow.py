@@ -18,6 +18,7 @@ def test_plus_plus_picks_the_smallest_plan_near_the_best():
     assert plus_plus_from_totals(totals) == (tr,)  # 11% is within 90% of the best 12%
     assert plus_plus_from_totals({**totals, (tr,): 0.92}) == (tr, vr)
     assert plus_plus_from_totals({(): 1.0, (sp,): 1.1}) == ()  # nothing helps: no surgery
+    assert plus_plus_from_totals({(): 1.0, (tr,): 0.97, (sp,): 1.1}) == ()  # 3% is under the 5% minimum benefit
 
 
 def test_stored_runs_win_and_missing_runs_are_not_guessed():

@@ -49,3 +49,11 @@ def test_plan_ranking_lists_every_plan_with_openfoam_drops():
     assert table["standard rule"].tolist().count("picks") == 1 and table["standard rule"].iloc[1] == "picks"
     assert set(studio.plan_ranking({}, ())["OpenFOAM drop %"]) == {"not run"}
 
+
+
+def test_surgeon_labels_show_depth_in_mm_or_layers():
+    assert studio.surgeon_label({"technique": "valve_repair", "side": "both", "depth_mm": 1.2}) == "valve repair (both, 1.2 mm)"
+    assert studio.surgeon_label({"technique": "turbinate_reduction", "side": "left", "depth": 2}) == "turbinate reduction (left, 2 layers)"
+    assert studio.surgeon_label({"technique": "septoplasty", "side": "both", "depth_mm": 0.6}) == "septoplasty (0.6 mm)"
+    assert studio.surgeon_label({"undo": {"technique": "widen", "side": "left", "depth": 1, "region": "choana",
+                                          "direction": "vertical"}}) == "undo widen choana vertical (left, 1 layer)"

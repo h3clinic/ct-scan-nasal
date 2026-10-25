@@ -372,7 +372,9 @@ The extra 196 training answers lowered the held-out loss (0.358 on these 67 ques
 
 `nasal.surgeon.run_surgeon` lets a language model plan and perform virtual surgery on one patient's CT airway; the studio runs it from **Let the agent operate**. The model only chooses tool calls:
 
-- **Techniques** (`nasal.decision.patient.operate`): `turbinate_reduction` (lateral wall of the turbinate region), `valve_repair` (valve region sideways and vertically), `septoplasty` (septum toward the wider side) and `widen` (a general cut of one region: vestibule, valve, turbinate or choana; lateral, vertical or all directions). Each takes a side (left, right or both) and a depth of 1 to 3 voxel layers (about 0.6 mm each). These sizes are modeling choices, not surgical prescriptions; the operations never cross the septum or the nostril and outlet cuts.
+- **Techniques** (`nasal.decision.patient.operate`): `turbinate_reduction` (lateral wall of the turbinate region), `valve_repair` (valve region sideways and vertically), `septoplasty` (straightens local bulges of the septum; see Step 5) and `widen` (a general cut of one region: vestibule, valve, turbinate or choana; lateral, vertical or all directions). Each takes a side (left, right or both; septoplasty has none) and a depth in millimetres up to 2 mm (`depth_mm`). The depth becomes voxel layers per axis: voxels are about 0.6 mm wide but 1.5 mm between slices, so 1.2 mm is 2 layers sideways and 1 vertically, and under 0.75 mm there is no vertical change. Whole layers (`depth`, 1 to 3) still work, for the campaign's reference plans. These sizes are modeling choices, not surgical prescriptions; the operations never cross the septum or the nostril and outlet cuts.
+- **Edited volume:** every operation and the final result report the airway added and removed in mm³, separately (`edited_volume`), since a net volume can hide large opposite changes. This measures the modeled airway, not tissue removed in surgery.
+- **No surgery:** `finish_surgery` can keep none, the original airway, after at least one operation was checked. Code, not the model, adds the recommendation: "no surgery" when no operation is kept or the kept plan lowers resistance by less than the placeholder minimum benefit (5%, `PLACEHOLDER_THRESHOLDS["min_benefit_pct"]`, not a clinical value).
 - **Checks:** every candidate is run in OpenFOAM (the studio's settings: 900 iterations by default; at most 6 runs per session). The agent may not finish before checking at least one operation, and its final airway is always simulated. Its summary passes the number check or is replaced by a summary written by code.
 - **Technique notes:** `technique_info` returns the same general textbook summary as the distillation card (techniques, risks); no ENT has reviewed it. The agent does not search the literature.
 - **First run:** on P022 with the local Qwen2.5-14B (as a custom provider through Ollama) and two OpenFOAM runs, the agent tried a left turbinate reduction (0.2633 to 0.2618 Pa·s/cm³), added a right valve repair (0.2524, 4.2% lower than before surgery) and finished with a summary that passed the number check, in 413 s. It did not target the left choana, which holds most of that side's resistance and which only the general `widen` cut can reach. A second run from the studio's **Let the agent operate**, same model and patient, chose turbinate reduction on both sides (0.2633 to 0.2403 Pa·s/cm³, 8.8% lower; 2 OpenFOAM runs, 509 s), redrawing the airway after each cut and recoloring it after each run. In an earlier run, before the rule that at least one operation must be checked, the same model finished without operating.
@@ -410,21 +412,21 @@ The evaluator is pluggable (`evaluator=`). It defaults to the uncalibrated formu
 
 ### Step 5: virtual surgery on real airways, verified in OpenFOAM
 
-`nasal.decision.patient` applies the procedures to a patient's voxel airway. Each procedure adds or moves one voxel layer (about 0.6 mm). These are modeling choices, not surgical prescriptions.
+`nasal.decision.patient` applies the procedures to a patient's voxel airway. In the fixed plans below each procedure acts by one voxel layer (about 0.6 mm sideways). These are modeling choices, not surgical prescriptions.
 
 - **Valve repair:** widens both valve regions (20–35% of each cavity's length) sideways and vertically.
 - **Turbinate reduction:** pushes both cavities' lateral wall outward in the turbinate region (35–85%).
-- **Septoplasty:** removes the wider cavity's medial layer and grows the narrower one toward it.
+- **Septoplasty:** a local correction. In every coronal row of the valve and turbinate regions, the septum is the tissue between the two cavities' medial edges, counted only where they are at most 8 mm apart. A plane is fitted to the septum's midline by least absolute deviations, so it follows the straight majority of the septum. Rows whose midline lies at least one voxel off that plane are moved back toward it, by up to the depth, never more than a quarter voxel past it. The septum keeps its thickness: the cavity it bulged into gains exactly the air the other cavity gives up, and that cavity keeps at least one voxel in the row. A straight septum is left unchanged. The earlier version removed the wider cavity's medial layer and could barely grow the other side, so it mostly removed airway; that was the cause of the septoplasty artifact.
 - **Limits:** growth never touches the other cavity or crosses the nostril or outlet cuts, and the airway is kept as one connected piece.
 
 Both rules are applied per patient:
 
 - **Standard rule:** turbinate reduction, plus septoplasty when one side's mean cross-section is over 1.3 times the other's (a placeholder threshold).
-- **Workflow++:** scores all 7 plans with the patient surrogate on the operated airway's measured geometry.
+- **Workflow++:** scores all 7 plans with the patient surrogate on the operated airway's measured geometry and picks the smallest plan near the best one. It recommends no surgery when even the best plan lowers resistance by less than the placeholder minimum benefit (5%). When scoring, no surgery counts as right when OpenFOAM's best plan is also under 5%.
 
 `nasal-patients surgery --labels nasalseg/labels --ids P022 --procs 4` then runs OpenFOAM on the untouched airway and on all 7 plans, and prints how each rule's choice compares.
 
-We ran the 12 most obstructed patients whose labels pass the position check. 2 pairs turned out to be duplicate scans in NasalSeg (P009/P010 and P080/P081 have identical geometry), so the results below cover 10 distinct airways, 8 OpenFOAM runs each:
+We ran the 12 most obstructed patients whose labels pass the position check. 2 pairs turned out to be duplicate scans in NasalSeg (P009/P010 and P080/P081 have identical geometry), so the results below cover 10 distinct airways, 8 OpenFOAM runs each. **Being updated:** the numbers below were computed with the previous septoplasty, which removed airway; the 4 plans with septoplasty are being re-run in OpenFOAM with the local correction above, and Workflow++ is rescored with the 5% minimum benefit.
 
 | Plan chosen by | Mean OpenFOAM resistance drop | Within 90% of the best plan's drop |
 | --- | --- | --- |

@@ -118,3 +118,31 @@ def test_a_plan_kept_in_an_earlier_attempt_cannot_be_kept_again():
         raise AssertionError("kept a repeated plan")
     s.operate({"technique": "turbinate_reduction", "side": "left"})
     assert s.finish_surgery({})["operations"][-1]["technique"] == "turbinate_reduction"
+
+
+def test_depth_in_mm_and_edited_volumes_in_mm3():
+    s = session()
+    out = s.operate({"technique": "valve_repair", "side": "left", "depth_mm": 1.0})
+    assert s.history[-1]["operation"] == {"technique": "valve_repair", "side": "left", "depth_mm": 1.0}
+    voxel = float(np.prod(SPACING))
+    assert out["added_mm3"] == round(out["voxels_added"] * voxel, 1) > 0 and out["removed_mm3"] == 0
+    assert out["total_added_mm3"] == out["added_mm3"]
+    s.undo({})  # replaying an operation given in mm works like one given in layers
+    assert np.array_equal(s.tags, s.original)
+
+
+def test_no_surgery_is_a_valid_finish_and_code_decides_the_recommendation():
+    s = session()
+    s.operate({"technique": "turbinate_reduction", "side": "right", "depth": 1})
+    s.simulate({})
+    done = s.finish_surgery({"keep": "none", "reason": "not enough benefit"})
+    assert done["operations"] == [] and done["recommendation"] == "no surgery"
+    assert done["added_mm3"] == done["removed_mm3"] == 0 and np.array_equal(s.tags, s.original)
+
+    small = session()
+    small.operate({"technique": "turbinate_reduction", "side": "right", "depth": 1})
+    result = small.finish_surgery({})
+    drop = -result["total_change_pct"]
+    assert result["recommendation"] == ("surgery" if drop >= 5.0 else "no surgery")
+    if drop < 5.0:
+        assert "placeholder minimum benefit" in result["recommendation_reason"]

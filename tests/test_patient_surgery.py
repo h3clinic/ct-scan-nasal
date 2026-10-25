@@ -41,14 +41,36 @@ def test_turbinate_reduction_moves_the_lateral_walls_out():
     assert (out[7:13] == tags[7:13]).all()
 
 
-def test_septoplasty_shifts_the_septum_toward_the_wider_side():
-    tags, cuts = airway(left_wider=True)
-    out = ps.septoplasty(tags, cuts, SPACING)
-    assert ((tags == L) & (out == 0))[13].any()  # wide (left) cavity loses its medial layer
-    assert ((tags == 0) & (out == R))[7].any()   # narrow (right) cavity gains one medially
-    m0, m1 = anatomy.measure(tags, SPACING), anatomy.measure(out, SPACING)
-    assert m1["right_mean_area_mm2"] > m0["right_mean_area_mm2"]
-    assert m1["left_mean_area_mm2"] < m0["left_mean_area_mm2"]
+def bulging_septum():
+    """The synthetic airway with its septum pushed 2 voxels toward the left cavity in a few turbinate rows."""
+    tags, cuts = airway()
+    rows = slice(10, 15)
+    sub = tags[:, rows]
+    sub[7:9][sub[7:9] == 0] = R  # the right cavity reaches into the old septum ...
+    sub[13:15][sub[13:15] == L] = 0  # ... and the left cavity loses its medial voxels
+    return tags, cuts, rows
+
+
+def test_septoplasty_leaves_a_straight_septum_alone():
+    tags, cuts = airway()
+    assert np.allclose(ps.septum_rows(tags, SPACING)["deviation"], 0)
+    assert np.array_equal(ps.septoplasty(tags, cuts, SPACING, depth=3), tags)
+
+
+def test_septoplasty_moves_a_local_bulge_back_and_keeps_the_septum_thick():
+    tags, cuts, rows = bulging_septum()
+    dev = ps.septum_rows(tags, SPACING)
+    assert dev["deviation"].max() >= 1.5  # the bulging rows sit about 2 voxels toward the left
+    out = ps.septoplasty(tags, cuts, SPACING, depth=3)
+    gained = (out == L) & (tags == 0)
+    lost = (tags == R) & (out == 0)
+    assert gained.sum() == lost.sum() > 0  # one cavity gains exactly what the other gives up
+    assert set(np.argwhere(gained)[:, 1]) <= set(range(10, 15))  # only the deviated rows change
+    assert set(np.argwhere(gained)[:, 0]) == {13, 14} and set(np.argwhere(lost)[:, 0]) == {7, 8}
+    assert np.array_equal(out[:, :10], tags[:, :10]) and np.array_equal(out[:, 15:], tags[:, 15:])
+    one = ps.septoplasty(tags, cuts, SPACING, depth=1)  # depth caps the move; it never overshoots the plane
+    assert ((one == L) & (tags == 0)).sum() == gained.sum() // 2
+    assert np.array_equal(ps.septoplasty(out, cuts, SPACING, depth=3), out)
 
 
 def test_growth_never_breaches_a_one_voxel_septum():
@@ -133,3 +155,39 @@ def test_operation_rejects_choices_outside_the_tools(kwargs):
     tags, cuts = airway()
     with pytest.raises(ValueError):
         ps.operate(tags, cuts, SPACING, **kwargs)
+
+
+def test_depth_in_mm_follows_the_unequal_voxel_sizes():
+    tags, cuts = airway()
+    spacing = np.array([0.6, 0.6, 1.5])  # NasalSeg-like: thin in-plane, thick between slices
+    assert ps.layers_for(1.2, spacing, 0) == 2 and ps.layers_for(1.2, spacing, 2) == 1
+    assert ps.layers_for(0.6, spacing, 2) == 0  # under half a slice: no vertical change
+    shallow = ps.operate(tags, cuts, spacing, "valve_repair", depth_mm=0.6)
+    added = np.argwhere((shallow > 0) & (tags == 0))
+    assert len(added) and set(added[:, 2]) <= set(np.nonzero(tags.any(axis=(0, 1)))[0])  # sideways only
+    deeper = ps.operate(tags, cuts, spacing, "valve_repair", depth_mm=1.2)
+    assert ((deeper > 0) & (tags == 0)).sum() > len(added)
+    with pytest.raises(ValueError, match="under half a voxel"):
+        ps.operate(tags, cuts, spacing, "widen", region="valve", direction="vertical", depth_mm=0.6)
+    with pytest.raises(ValueError, match="depth_mm"):
+        ps.operate(tags, cuts, spacing, "valve_repair", depth_mm=5.0)
+    assert np.array_equal(ps.operate(tags, cuts, spacing, "valve_repair"),
+                          ps.operate(tags, cuts, spacing, "valve_repair", depth=1))  # layers still work
+
+
+def test_edited_volume_reports_added_and_removed_separately():
+    tags, cuts, _ = bulging_septum()
+    out = ps.septoplasty(tags, cuts, SPACING, depth=3)
+    vol = ps.edited_volume(tags, out, SPACING)
+    voxel = float(np.prod(SPACING))
+    assert vol["added_mm3"] == vol["removed_mm3"] == pytest.approx(((out == L) & (tags == 0)).sum() * voxel, abs=0.1)
+
+
+def test_no_surgery_is_right_when_no_plan_helps_enough():
+    rows = [{"patient": "P002", "plan": plan, "total_resistance": cfd, "surrogate_total": cfd,
+             "standard_plan": "turbinate_reduction", "plus_plus_plan": "none"}
+            for plan, cfd in [("none", 1.0), ("turbinate_reduction", 0.98), ("turbinate_reduction+valve_repair", 0.97)]]
+    out = ps.compare_surgery(pd.DataFrame(rows)).iloc[0]
+    assert out.plus_plus_drop_pct == 0 and out.plus_plus_near_best  # best is 3%, under the 5% minimum benefit
+    assert ps.choose_plan({(): 1.0, ("valve_repair",): 0.97}) == ()
+    assert ps.choose_plan({(): 1.0, ("valve_repair",): 0.9}) == ("valve_repair",)

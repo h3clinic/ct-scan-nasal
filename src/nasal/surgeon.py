@@ -6,7 +6,7 @@ The language model only chooses tool calls. Code applies every operation to the 
 every resistance, and the final summary must pass the same number check as the Explainer (one retry, then a
 summary written by code). Each operation and each simulation is reported to a listener, so an app can redraw
 the airway as the agent changes it. The technique notes are a general textbook summary that no ENT has reviewed,
-and the operations' sizes (one to three voxel layers, about 0.6 mm each) are modeling choices, not surgical
+and the operations' sizes (depths up to 2 mm, turned into voxel layers for each axis) are modeling choices, not surgical
 prescriptions.
 """
 
@@ -19,6 +19,7 @@ import numpy as np
 from . import agents, anatomy
 from .agents import ToolError, _summary, _tool
 from .decision import patient as ps
+from .decision.rules import PLACEHOLDER_THRESHOLDS
 from .params import REGIONS, SIDES
 
 MAX_TURNS = 24
@@ -29,35 +30,40 @@ TECHNIQUE_NOTES = {
         "Shrinks the inferior turbinates to widen the main airflow channel (submucous resection, microdebrider, "
         "radiofrequency or coblation reduction, outfracture), through the nostrils with an endoscope. Risks: "
         "bleeding, crusting and dryness, adhesions, regrowth, and empty nose syndrome when too much tissue is "
-        "removed. In the model: pushes the lateral wall of the turbinate region outward by `depth` layers."),
+        "removed. In the model: pushes the lateral wall of the turbinate region outward by `depth_mm`."),
     "valve_repair": (
         "Widens or stiffens the narrowest front part of the nose (spreader grafts, alar batten grafts, flaring "
         "sutures, lateral crural strut grafts) through an open or closed rhinoplasty approach. Risks: change in "
         "appearance, graft shifting or showing, infection, persistent obstruction. In the model: widens the valve "
-        "region sideways and vertically by `depth` layers."),
+        "region sideways and vertically by `depth_mm` (vertically only from 0.75 mm, since slices are 1.5 mm "
+        "apart)."),
     "septoplasty": (
         "Straightens a deviated septum through an incision inside the nose, lifting the lining and removing or "
         "reshaping bent cartilage and bone while keeping an L-shaped support strut. Risks: bleeding, septal "
         "hematoma, perforation, saddle nose, numb upper teeth, rarely a cerebrospinal fluid leak. In the model: "
-        "moves the septum toward the wider side by `depth` layers (the voxel version removes more airway than it "
-        "adds, so it can raise resistance)."),
+        "moves the parts of the septum that bulge away from its own fitted plane back toward it, by up to "
+        "`depth_mm`; the septum keeps its thickness, so one side gains the air the other gives up. A straight "
+        "septum is not changed, and side does not apply."),
     "widen": (
         "A general cut that removes tissue around one region of one or both cavities (vestibule, valve, "
         "turbinate or choana) in a chosen direction. It stands for the part of a real procedure that opens that "
-        "region; name the real technique when you explain it. In the model: grows that region by `depth` layers."),
+        "region; name the real technique when you explain it. In the model: grows that region by `depth_mm`."),
 }
 
 SURGEON_PROMPT = (
     "You are a virtual nasal surgeon working on one patient's CT airway in a research model (rigid walls, one "
-    "steady breath at 150 Pa; operations change the voxel airway by about 0.6 mm per layer). Goal: lower the "
+    "steady breath at 150 Pa; depths are in mm, up to 2 mm; voxels are about 0.6 mm wide and 1.5 mm high). "
+    "Goal: lower the "
     "nasal resistance with the least surgery, where it matters for this patient. Work like this: call "
     "airway_status to see where the resistance sits (by side and region); call technique_info before using a "
     "technique you have not used; operate with the smallest change that targets the main resistance; call "
     "simulate to check the result in OpenFOAM; undo operations that do not help. If the region that held the "
-    "most resistance still does after a simulation, operate on it again or deeper (depth 2 or 3) before adding "
+    "most resistance still does after a simulation, operate on it again or deeper (depth_mm 1.2 to 2) before adding "
     "shallow cuts elsewhere. Which operation acts on which region: valve -> valve_repair; turbinate -> "
     "turbinate_reduction; choana or vestibule -> widen with that region; a septum pushed toward one side -> "
-    "septoplasty (it can also raise resistance, so check it). Operate on the side where the resistance is. Try at most "
+    "septoplasty (it straightens only parts of the septum that bulge, so it may change nothing). Operate on the side "
+    "where the resistance is. If nothing you tried helps enough, finish with keep none: no surgery is a valid "
+    "outcome. Try at most "
     "a few plans, since "
     "each simulation takes minutes. Finish with finish_surgery naming the state to keep. Never state numbers "
     "yourself: every number comes from the tools."
@@ -97,8 +103,11 @@ class SurgerySession:
         self.listener(event, {"session": self, **data})
 
     def _changes(self) -> dict:
+        """Airway added and removed since the original, in voxels and mm3 (separately: a net volume can hide
+        large opposite changes; this is the modeled airway, not tissue removed in surgery)."""
         return {"voxels_added": int(((self.tags > 0) & (self.original == 0)).sum()),
-                "voxels_removed": int(((self.tags == 0) & (self.original > 0)).sum())}
+                "voxels_removed": int(((self.tags == 0) & (self.original > 0)).sum()),
+                **ps.edited_volume(self.original, self.tags, self.spacing)}
 
     # ---- tools
 
@@ -120,13 +129,18 @@ class SurgerySession:
         technique = args.get("technique")
         if technique not in TECHNIQUE_NOTES:
             raise ToolError(f"technique must be one of {list(TECHNIQUE_NOTES)}")
-        return {"technique": technique, "notes": TECHNIQUE_NOTES[technique], "max_depth": ps.MAX_DEPTH,
+        return {"technique": technique, "notes": TECHNIQUE_NOTES[technique], "max_depth_mm": ps.MAX_DEPTH_MM,
+                "voxel_size_mm": [round(float(v), 2) for v in self.spacing],
                 "regions": list(ps.REGION_NAMES), "directions": sorted(ps.DIRECTIONS)}
 
     def operate(self, args: dict) -> dict:
-        op = {k: args[k] for k in ("technique", "side", "depth", "region", "direction") if args.get(k) is not None}
+        op = {k: args[k] for k in ("technique", "side", "depth_mm", "depth", "region", "direction")
+              if args.get(k) is not None}
         op.setdefault("side", "both")
-        op.setdefault("depth", 1)
+        if "depth_mm" in op:
+            op.pop("depth", None)  # millimetres win over layers
+        else:
+            op.setdefault("depth", 1)
         if op.get("technique") != "widen":  # region and direction only steer the general cut
             op.pop("region", None)
             op.pop("direction", None)
@@ -137,11 +151,13 @@ class SurgerySession:
         added = int(((new > 0) & (self.tags == 0)).sum())
         removed = int(((new == 0) & (self.tags > 0)).sum())
         if not added and not removed:
-            raise ToolError("that operation changed nothing here (the region may already be at its limit)")
+            raise ToolError("that operation changed nothing here (the region may already be at its limit, or the "
+                            "septum has no local bulge to straighten)")
+        step = {"voxels_added": added, "voxels_removed": removed, **ps.edited_volume(self.tags, new, self.spacing)}
         self.tags = new
-        self.history.append({"operation": op, "voxels_added": added, "voxels_removed": removed})
+        self.history.append({"operation": op, **step})
         self._emit("operate", operation=op)
-        return {"applied": op, "voxels_added": added, "voxels_removed": removed, **{f"total_{k}": v for k, v in self._changes().items()},
+        return {"applied": op, **step, **{f"total_{k}": v for k, v in self._changes().items()},
                 "operations_so_far": len(self.history), "simulated": self.key() in self.simulated}
 
     def undo(self, args: dict) -> dict:
@@ -184,6 +200,8 @@ class SurgerySession:
         if not tried and not force:
             raise ToolError("check at least one operation in OpenFOAM before finishing: operate, then simulate "
                             "(you can undo it afterwards if it does not help)")
+        if args.get("keep") == "none":  # no surgery: keep the original airway
+            self.history, self.tags = [], self.original
         if self.key() not in self.simulated:
             self.simulate({})  # never finish on an unverified airway
         self.finished = {"operations": [h["operation"] for h in self.history], **self._changes(),
@@ -193,6 +211,15 @@ class SurgerySession:
             self.finished["before"] = _summary(base)
             self.finished["total_change_pct"] = round(
                 100 * (self.finished["after"]["total_resistance"] / base["total_resistance"] - 1), 1)
+        # decided by code: below the placeholder minimum benefit, the recommendation is no surgery
+        drop = -self.finished.get("total_change_pct", 0.0)
+        enough = bool(self.history) and drop >= PLACEHOLDER_THRESHOLDS["min_benefit_pct"]
+        self.finished["recommendation"] = "surgery" if enough else "no surgery"
+        if not enough:
+            self.finished["recommendation_reason"] = (
+                "no operation kept" if not self.history else
+                f"the kept plan lowers resistance by {drop}%, below the {PLACEHOLDER_THRESHOLDS['min_benefit_pct']}% "
+                "placeholder minimum benefit")
         self._emit("finished", result=self.finished)
         return self.finished
 
@@ -209,7 +236,8 @@ agents.SCHEMAS.update({
         "type": "object", "properties": {
             "technique": {"type": "string", "enum": list(ps.TECHNIQUES)},
             "side": {"type": "string", "enum": ["left", "right", "both"]},
-            "depth": {"type": "integer", "minimum": 1, "maximum": ps.MAX_DEPTH, "description": "voxel layers, about 0.6 mm each"},
+            "depth_mm": {"type": "number", "exclusiveMinimum": 0, "maximum": ps.MAX_DEPTH_MM,
+                         "description": "how far the change reaches, in mm (turned into voxel layers per axis)"},
             "region": {"type": "string", "enum": list(ps.REGION_NAMES), "description": "widen only"},
             "direction": {"type": "string", "enum": sorted(ps.DIRECTIONS), "description": "widen only"}},
         "required": ["technique"]}),
@@ -217,8 +245,10 @@ agents.SCHEMAS.update({
     "simulate": _tool("simulate", f"Run OpenFOAM on the current airway (several minutes; at most {MAX_SIMULATIONS} "
                       "per session) and return its resistance and the change from before surgery.",
                       {"type": "object", "properties": {}}),
-    "finish_surgery": _tool("finish_surgery", "Finish and keep the current airway (it is simulated first if needed).",
-                            {"type": "object", "properties": {"reason": {"type": "string"}}}),
+    "finish_surgery": _tool("finish_surgery", "Finish: keep the current airway (simulated first if needed), or keep "
+                            "none for no surgery. Code adds the recommendation (no surgery below the minimum benefit).",
+                            {"type": "object", "properties": {"reason": {"type": "string"},
+                                                              "keep": {"type": "string", "enum": ["current", "none"]}}}),
 })
 
 
@@ -259,4 +289,6 @@ def summary_by_code(finished: dict) -> str:
     text = f"Operations kept: {ops}. OpenFOAM total resistance after: {finished['after']['total_resistance']} Pa*s/cm^3"
     if "before" in finished:
         text += f", before: {finished['before']['total_resistance']} ({finished['total_change_pct']}%)"
-    return text + f". Voxels added: {finished['voxels_added']}, removed: {finished['voxels_removed']}."
+    text += (f". Airway added: {finished['added_mm3']} mm3, removed: {finished['removed_mm3']} mm3 "
+             f"(voxels {finished['voxels_added']} and {finished['voxels_removed']})")
+    return text + f". Recommendation: {finished['recommendation']}."

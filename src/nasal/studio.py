@@ -97,13 +97,19 @@ def airway_figure(surface: dict, title: str, result: dict | None = None, changes
 
 
 def surgeon_label(op: dict) -> str:
-    """'valve repair (both, 1 layer)' for an operation the surgeon agent applied (or undid)."""
+    """'valve repair (both, 1.2 mm)' for an operation the surgeon agent applied (or undid); depths given in
+    voxel layers read '(both, 2 layers)'."""
     if "undo" in op:
         return "undo " + surgeon_label(op["undo"])
     where = op.get("region", "")
-    depth = op.get("depth", 1)
     extra = f" {where} {op.get('direction', '')}".rstrip() if where else ""
-    return f"{op['technique'].replace('_', ' ')}{extra} ({op.get('side', 'both')}, {depth} layer{'s' if depth > 1 else ''})"
+    if "depth_mm" in op:
+        size = f"{op['depth_mm']:g} mm"
+    else:
+        depth = op.get("depth", 1)
+        size = f"{depth} layer{'s' if depth > 1 else ''}"
+    side = "" if op["technique"] == "septoplasty" else f"{op.get('side', 'both')}, "
+    return f"{op['technique'].replace('_', ' ')}{extra} ({side}{size})"
 
 
 def summary(result: dict) -> str:
@@ -385,8 +391,9 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
             title = f"{st['name']} · {name} · OpenFOAM {after['total_resistance']:.3f} Pa·s/cm³ ({abs(drop):.1f}% {'lower' if drop >= 0 else 'higher'})"
         else:
             title = f"{st['name']} · {name} · not simulated yet"
-        info = (f"**Plan:** {name}: {len(changes['added']):,} voxels added, {len(changes['removed']):,} removed "
-                f"(one layer, about 0.6 mm).  \n**Standard rule** picks {ps.label(standard).replace('_', ' ')} "
+        vol = ps.edited_volume(tags, operated, spacing)
+        info = (f"**Plan:** {name}: airway added {vol['added_mm3']:,.0f} mm³, removed {vol['removed_mm3']:,.0f} mm³ "
+                f"(one voxel layer per procedure).  \n**Standard rule** picks {ps.label(standard).replace('_', ' ')} "
                 f"(placeholder threshold, not ENT-reviewed).  \n")
         if before and after:
             info += f"**OpenFOAM:** {before['total_resistance']:.4f} → {after['total_resistance']:.4f} Pa·s/cm³."
@@ -551,7 +558,9 @@ def build_app(images_dir: Path, labels_dir: Path, sim_path: Path = agents.PATIEN
             surface = demo.tags_surface(session.tags, st["spacing"], st["origin"])
             title = f"{st['name']} · agent: {ops}" + (f" · OpenFOAM {after['total_resistance']:.3f} Pa·s/cm³" if after else " · not simulated")
             table = region_table(before, after) if (before and after and session.history) else (region_table(after) if after else None)
-            info = (f"**Surgeon agent:** {ops}. {len(changes['added']):,} voxels added, {len(changes['removed']):,} removed. "
+            vol = ps.edited_volume(session.original, session.tags, st["spacing"])
+            info = (f"**Surgeon agent:** {ops}. Airway added {vol['added_mm3']:,.0f} mm³, removed "
+                    f"{vol['removed_mm3']:,.0f} mm³. "
                     f"OpenFOAM runs: {session.runs}.")
             steps["text"] = " · ".join(lines[-8:]) or steps["text"]
             shown = [*log, steps]
