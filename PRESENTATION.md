@@ -6,9 +6,9 @@ Everything for a live presentation: setup, the word-for-word script with clicks,
 
 1. **Network:** connect to your phone hotspot if the venue's Wi-Fi blocks APIs. Check with `curl -s https://api.openai.com/v1/models` (any reply means it isn't blocked).
 2. **OpenAI:** set `OPENAI_API_KEY` (or paste the key in the studio's Settings) and make sure the account has credits; with none, every agent request fails.
-3. **Demo:** run `nasal-demo --labels <labels> --sim data/patient_sim.csv --model data/patient_surrogate.json` and open http://127.0.0.1:7860. It should open on P022.
-4. **Warm-up:** click **Run agents** once, then reload the page so it starts clean.
-5. **Tabs:** the demo, the Nasal0 gallery (scrolled to the video, as backup) and the repo README. Close everything else, mute notifications, and set the browser zoom to 125% so the room can read it.
+3. **Studio:** set `NASALSEG_ROOT` to the NasalSeg folder and start `start-studio.bat` (or `./start-studio.sh`). It opens http://127.0.0.1:7861 on P022 and shows the setup check; everything the demo uses should be ready.
+4. **Warm-up:** ask the console one question, so the local model is loaded, then reload the page so it starts clean.
+5. **Tabs:** the studio, the Nasal0 gallery (scrolled to the video, as backup) and the repo README. Close everything else, mute notifications, and set the browser zoom to 125% so the room can read it.
 
 ## Script (about 4 minutes)
 
@@ -26,21 +26,19 @@ Everything for a live presentation: setup, the word-for-word script with clicks,
 
 > "This patient's left side carries three times the resistance of the right, and most of it is at the back of the left cavity, not at the front where you'd look first."
 
-**[Point at the numbers and table] (1:00)**
+**[Point at the region table] (1:00)**
 
-> "A simulation like this takes minutes on a cluster. Our surrogate answers in a fraction of a millisecond. And we show its error: for this patient it is 45% off, which our system flags itself."
+> "The table splits it by region. The left choana alone holds most of that side's resistance."
 
-**[Move "Left narrowest" to +30] (1:20)**
+**[Click "Run all 7 plans"] (1:20)**
 
-> "So, what if we widen the narrowest part of the left side by 30%? The map and the totals update instantly."
+> "Every combination of turbinate reduction, valve repair and septoplasty, each checked in OpenFOAM, ranked by how much it lowers resistance. These are stored runs; a new patient's run streams live while the solver works."
 
-**[Set it back to 0. Click "Run agents"] (1:40)**
+**[Type in the console: "Which surgery should this patient have and why?"] (1:40)**
 
-> "Now ask in plain language. Four agents, all one OpenAI model, each with its own job and its own tools.
+> "Now ask in plain language. A small model running on this laptop answers, with no cloud and no API key.
 >
-> Watch the steps stream in. The Case agent picks the patient. The Planner calls the physics tools. The Critic checks the results. The Explainer writes the answer.
->
-> The models only choose tools. Every number comes from code, and code checks every number the Explainer writes. If one doesn't match, code writes the answer instead."
+> The model only writes the words. Code picks the tools, every number comes from OpenFOAM, and code checks every number in the answer. If one doesn't match, code writes the answer instead."
 
 **[Answer appears] (2:20)**
 
@@ -62,10 +60,10 @@ Everything for a live presentation: setup, the word-for-word script with clicks,
 
 ## If something breaks
 
-- **Agents fail or hang:** keep going with the map, sliders and table; they work without the model. Then play the agent part of the video in the gallery (from 1:05).
-- **Demo won't start:** play the gallery video from the start and narrate the same script over it.
+- **The console fails or hangs:** keep going with the map, the region table and the plan ranking; they work without any model. Then play the agent part of the video in the gallery (from 1:05).
+- **The studio won't start:** play the gallery video from the start and narrate the same script over it.
 - **OpenAI refuses (no credits, bad key):** the console says why in plain words; fix it in Settings, or carry on without the agents.
-- **No internet at all:** the demo still runs locally except the agents. Use the video for that part.
+- **No internet at all:** the studio runs fully locally, including the console's local model.
 
 ## Likely questions
 
@@ -76,7 +74,7 @@ Yes, the airways come from NasalSeg, a public dataset of 130 CT scans. We simula
 It's a standard steady-state OpenFOAM setup (k-omega SST turbulence model). The median resistance, 0.146 Pa·s/cm³, is in the range measured on real adult noses. The walls are rigid and at voxel resolution, so the absolute numbers are approximate; comparing plans is the strong use.
 
 **Why a surrogate instead of always simulating?**
-A simulation takes minutes on many cores. The surrogate takes well under a millisecond, which is what makes the demo's sliders instant. On some airways it is off by more than 30%, so for real patients the agents read OpenFOAM results instead, and the studio runs a missing case in a few minutes.
+A simulation takes minutes on many cores. The surrogate takes well under a millisecond, but on some airways it is off by more than 30%, so for real patients the agents and the studio read OpenFOAM results instead, and the studio runs a missing case in a few minutes.
 
 **How good is the surrogate?**
 On real airways it averages a 16% error per side, against 30% for simply guessing the average patient. Its estimates of how much a surgery plan helps are rough (correlation 0.51 with OpenFOAM), which is why plans were scored in OpenFOAM.

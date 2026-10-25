@@ -8,8 +8,6 @@ anywhere but that provider.
 """
 
 import json
-import shutil
-import subprocess
 
 from .providers import PROVIDERS, looks_like_key  # noqa: F401  (looks_like_key is part of this module's API)
 
@@ -86,19 +84,3 @@ def test_key(key: str, provider: str = "OpenAI", base_url: str | None = None) ->
         return True, "Key works."
     except Exception as err:  # authentication, network or quota: show the kind, never the key
         return False, f"Key test failed: {type(err).__name__}."
-
-
-def docker_status(image: str) -> str:
-    """One line: whether Docker is running and has the OpenFOAM image."""
-    docker = shutil.which("docker")
-    if not docker:
-        return "Docker is not installed."
-    try:
-        info = subprocess.run([docker, "info", "--format", "{{.ServerVersion}}"], capture_output=True, text=True, timeout=20)
-        if info.returncode != 0:
-            return "Docker is installed but not running: start Docker Desktop."
-        found = subprocess.run([docker, "image", "inspect", image], capture_output=True, text=True, timeout=20)
-    except subprocess.TimeoutExpired:
-        return "Docker did not answer in time."
-    have = "image ready" if found.returncode == 0 else f"image {image} will be downloaded on the first run"
-    return f"Docker {info.stdout.strip()} running, {have}."

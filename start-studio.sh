@@ -32,7 +32,7 @@ fi
 if [ "$update" = 1 ]; then
     echo "Installing the studio (a few minutes the first time) ..."
     "$PY" -m pip install --upgrade pip -q
-    "$PY" -m pip install -q -e ".[demo,segment,agents,patients]"
+    "$PY" -m pip install -q -e ".[studio,segment,agents,patients]"
 fi
 
 "$PY" -m nasal.setup_check

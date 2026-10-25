@@ -29,7 +29,7 @@ for %%A in (%*) do (
 if defined UPDATE (
     echo Installing the studio ^(a few minutes the first time^) ...
     "%PY%" -m pip install --upgrade pip -q
-    "%PY%" -m pip install -q -e ".[demo,segment,agents,patients]"
+    "%PY%" -m pip install -q -e ".[studio,segment,agents,patients]"
     if errorlevel 1 (
         echo Installing failed; see the messages above.
         pause

@@ -58,11 +58,6 @@ def test_without_a_credential_store_nothing_is_saved(monkeypatch):
     assert settings.load_saved() is None
 
 
-def test_docker_status_without_docker(monkeypatch):
-    monkeypatch.setattr(settings.shutil, "which", lambda name: None)
-    assert settings.docker_status("img") == "Docker is not installed."
-
-
 def test_agents_need_an_openai_key(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="Settings"):

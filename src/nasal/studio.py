@@ -17,11 +17,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import agents, anatomy, demo, distill, live, providers, settings, setup_check, spectator, surgeon
+from . import agents, anatomy, distill, live, providers, settings, setup_check, spectator, surgeon, view
 from .decision import patient as ps
 from .params import REGIONS, SIDES
 from .patient_flow import _RUN_ID, FAST_ITERATIONS, WORK_DIR, PatientFlow, run_openfoam
-from .simulate import IMAGE
 
 PROCEDURE_NAMES = {"Turbinate reduction": "turbinate_reduction", "Valve repair": "valve_repair",
                    "Septoplasty": "septoplasty"}
@@ -53,8 +52,8 @@ def region_table(before: dict, after: dict | None = None) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def plan_ranking(results: dict[str, dict], standard: tuple) -> pd.DataFrame:
-    """Every plan with OpenFOAM's resistance drop where it has been run, best first, and the standard rule's pick.
+def plan_ranking(results: dict[str, dict]) -> pd.DataFrame:
+    """Every plan with OpenFOAM's resistance drop where it has been run, best first.
 
     `results` maps plan labels ('none', 'turbinate_reduction+valve_repair', ...) to OpenFOAM records."""
     before = results.get("none")
@@ -64,8 +63,7 @@ def plan_ranking(results: dict[str, dict], standard: tuple) -> pd.DataFrame:
         r = results.get(name)
         rows.append({"plan": name.replace("_", " ").replace("+", " + "),
                      "OpenFOAM drop %": round(100 * (1 - r["total_resistance"] / before["total_resistance"]), 1)
-                     if (r is not None and before is not None) else np.nan,
-                     "standard rule": "picks" if plan == standard else ""})
+                     if (r is not None and before is not None) else np.nan})
     table = pd.DataFrame(rows).sort_values("OpenFOAM drop %", ascending=False, na_position="last", ignore_index=True)
     table["OpenFOAM drop %"] = table["OpenFOAM drop %"].astype(object).where(table["OpenFOAM drop %"].notna(), "not run")
     return table
@@ -76,7 +74,7 @@ def airway_figure(surface: dict, title: str, result: dict | None = None, changes
     import plotly.graph_objects as go
 
     if result is not None:
-        fig = demo.resistance_figure(surface, demo.region_values(result), title)
+        fig = view.resistance_figure(surface, view.region_values(result), title)
     else:
         v, f = surface["verts"], surface["faces"]
         fig = go.Figure(go.Mesh3d(x=v[:, 0], y=v[:, 1], z=v[:, 2], i=f[:, 0], j=f[:, 1], k=f[:, 2], color="#9ecae1",
@@ -249,9 +247,8 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
     images = {f.name.split("_")[0]: f for f in Path(images_dir).glob("*_img.nrrd")} if images_dir else {}
     labels = {f.name.split("_")[0]: f for f in Path(labels_dir).glob("*_seg.nrrd")} if labels_dir else {}
     ids = sorted(set(images) & set(labels))
-    default = demo.DEFAULT_PATIENT if demo.DEFAULT_PATIENT in ids else (ids[0] if ids else None)
+    default = view.DEFAULT_PATIENT if view.DEFAULT_PATIENT in ids else (ids[0] if ids else None)
     session_runs: dict[tuple[str, str], dict] = {}  # runs on airways that are not NasalSeg expert labels
-    max_cores = max(1, (os.cpu_count() or 4) - 2)
 
     def ready_text() -> str:
         return f"OpenFOAM local · {flow.procs} cores × {flow.parallel} cases · {flow.iterations} iterations"
@@ -263,7 +260,7 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
             return {label: r for label in labels_ if (r := flow.known(st["name"], label)) is not None}
         return {plan: r for (key, plan), r in session_runs.items() if key == st["key"]}
 
-    def load_airway(pid, upload, source):
+    def load_airway(pid, upload):
         """-> state dict with the cut airway, or raises gr.Error."""
         imported = None
         if upload:
@@ -284,14 +281,6 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
             how = f"segmented from the uploaded CT ({imported['format']}, {imported['slices']} slices)"
         elif pid not in images:
             raise gr.Error("upload a CT scan (DICOM, NIfTI or NRRD), or start the studio with --images and --labels")
-        elif source == "Automatic (from the CT)":
-            if not segment_model.exists():
-                raise gr.Error(f"automatic segmentation needs {segment_model}: run nasal-segment train")
-            import joblib
-
-            ct, spacing, origin = sg.load_ct(images[pid])
-            lab = sg.segment(ct, spacing, joblib.load(segment_model))
-            name, how = pid, "segmented automatically from the CT (no expert labels)"
         else:
             lab, spacing, origin = anatomy.load_labels(labels[pid], like=images[pid])
             name, how = pid, "NasalSeg expert labels"
@@ -308,7 +297,7 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
         geometry = anatomy.measure(st["tags"], st["spacing"])
         results = openfoam_results(st)
         result = results.get("none")
-        surface = demo.tags_surface(st["tags"], st["spacing"], st["origin"])
+        surface = view.tags_surface(st["tags"], st["spacing"], st["origin"])
         title = f"{st['name']} · OpenFOAM · {result['total_resistance']:.3f} Pa·s/cm³" if result else f"{st['name']} · not simulated yet"
         info = (f"**{st['name']}**, {st['how']}: {int((st['tags'] > 0).sum()):,} airway voxels, "
                 f"left {geometry['left_volume_cm3']:.1f} cm³, right {geometry['right_volume_cm3']:.1f} cm³.  \n")
@@ -316,16 +305,15 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
                  "No OpenFOAM run for this airway yet: **Run airflow**.")
         if st.get("imported"):
             info += "  \n" + import_text(st["imported"])
-        standard = ps.standard_rule_patient(geometry)
         return (plot_theme(airway_figure(surface, title, result)), region_table(result) if result else None,
-                plan_ranking(results, standard), info)
+                plan_ranking(results), info)
 
-    def reconstruct(pid, upload, source):
+    def reconstruct(pid, upload):
         if not upload and pid not in images:  # no NasalSeg folders and nothing uploaded yet
             return ({}, gr.update(), gr.update(), gr.update(),
                     "**Upload a CT scan to start:** DICOM (a .zip of the series or the slice files), NIfTI or NRRD.",
                     ready_text())
-        st = load_airway(pid, upload, source)
+        st = load_airway(pid, upload)
         st["timeline"].add("you", "open", f"opened {st['name']} ({st['how']})", result=openfoam_results(st).get("none"))
         return (st, *original_view(st), ready_text())
 
@@ -336,7 +324,7 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
         only when a new field sample arrived (every live.LIVE_EVERY iterations); `shown` remembers the last."""
         key = (st["key"], label)
         if key not in live_surfaces:
-            live_surfaces[key] = demo.tags_surface(tags, st["spacing"], st["origin"], step=2)
+            live_surfaces[key] = view.tags_surface(tags, st["spacing"], st["origin"], step=2)
         sample = (label, (snap.get("fields") or {}).get("iteration"))
         name = label.replace("_", " ").replace("+", " + ")
         figure = gr.update()
@@ -414,11 +402,10 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
     def surgery_view(st, plan):
         tags, cuts, spacing = st["tags"], st["cuts"], st["spacing"]
         operated = ps.apply_patient_plan(tags, cuts, spacing, plan)
-        standard = ps.standard_rule_patient(anatomy.measure(tags, spacing))
         changes = changed_voxels(tags, operated, spacing, st["origin"])
         results = openfoam_results(st)
         before, after = results.get("none"), results.get(ps.label(plan))
-        surface = demo.tags_surface(operated, spacing, st["origin"])
+        surface = view.tags_surface(operated, spacing, st["origin"])
         name = ps.label(plan).replace("_", " ").replace("+", " + ")
         if before and after:
             drop = 100 * (1 - after["total_resistance"] / before["total_resistance"])
@@ -427,8 +414,7 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
             title = f"{st['name']} · {name} · not simulated yet"
         vol = ps.edited_volume(tags, operated, spacing)
         info = (f"**Plan:** {name}: airway added {vol['added_mm3']:,.0f} mm³, removed {vol['removed_mm3']:,.0f} mm³ "
-                f"(one voxel layer per procedure).  \n**Standard rule** picks {ps.label(standard).replace('_', ' ')} "
-                f"(placeholder threshold, not ENT-reviewed).  \n")
+                f"(one voxel layer per procedure).  \n")
         if before and after:
             info += f"**OpenFOAM:** {before['total_resistance']:.4f} → {after['total_resistance']:.4f} Pa·s/cm³."
         else:
@@ -436,16 +422,7 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
             info += f"Not simulated yet: {' and '.join(missing)}. **Run airflow on plan**."
         table = region_table(before, after) if (before and after) else None
         return ({**st, "operated": operated, "plan": plan},
-                plot_theme(airway_figure(surface, title, after, changes)), table, plan_ranking(results, standard), info)
-
-    def operate(st, choices):
-        if not st:
-            raise gr.Error("open an airway first")
-        view = surgery_view(st, plan_from_choices(choices))
-        name = ps.label(view[0]["plan"]).replace("_", " ").replace("+", " + ")
-        st["timeline"].add("you", "operate", f"applied plan: {name}", tags=view[0]["operated"],
-                           result=openfoam_results(st).get(ps.label(view[0]["plan"])))
-        return view
+                plot_theme(airway_figure(surface, title, after, changes)), table, plan_ranking(results), info)
 
     def show_original(st):
         if not st:
@@ -459,9 +436,9 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
         if not st:
             raise gr.Error("open an airway first")
         plan = plan_from_choices(choices)
-        view = surgery_view(st, plan)
-        yield (*view, ready_text(), gr.update())
-        st = view[0]
+        plan_view = surgery_view(st, plan)
+        yield (*plan_view, ready_text(), gr.update())
+        st = plan_view[0]
         plans = ps.candidate_plans() if every else [plan]
         jobs = [("none", st["tags"])] + [(ps.label(p), st["operated"] if p == plan else
                                           ps.apply_patient_plan(st["tags"], st["cuts"], st["spacing"], p)) for p in plans if p]
@@ -485,29 +462,37 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
         spec = providers.PROVIDERS[name]
         key = prefs.get("api_key") or (os.environ.get("OPENAI_API_KEY") if name == "OpenAI" else None)
         if not key:
-            raise gr.Error("add an API key in Settings (top right), or switch Answers from to the local model there")
+            raise gr.Error("add an API key in Settings (top right); the surgeon agent needs a language model")
         model = prefs.get("model") or (agents.OPENAI_MODEL if name == "OpenAI" else spec.default_model)
         base_url = prefs.get("base_url") or spec.base_url
         if not base_url:
             raise gr.Error("a custom provider needs its API address in Settings")
         return {"provider": name, "api_key": key, "model": model, "base_url": base_url}
 
+    def local_ready() -> bool:
+        return setup_check.check_ollama(timeout=1.5)[1]["status"] == "ok"
+
+    def has_key(prefs) -> bool:
+        return bool(prefs.get("api_key") or ((prefs.get("provider") or providers.DEFAULT) == "OpenAI"
+                                             and os.environ.get("OPENAI_API_KEY")))
+
     def ask(pid, question, memory, log, prefs):
+        """The local distilled model answers when it is installed (nothing leaves this computer); otherwise the
+        cloud agents answer with the API key from Settings."""
         if not question.strip():
             raise gr.Error("type a question first")
         log = [*log, {"role": "you", "text": f"{pid} · {question}", "meta": "you"}]
-        if prefs.get("answers_from") == "Local distilled Qwen (no API)":
+        if local_ready() or not has_key(prefs):
             yield from ask_local(pid, question, memory, log)
             return
         model = llm(prefs)
         steps = {"role": "system", "text": "Running…", "meta": f"{model['provider']} · {model['model']}"}
-        history = memory if prefs.get("remember_questions", True) else None
-        for steps_md, answer_md in demo.ask_agents(pid, question, patients, flow, history=history, **model):
+        history = memory
+        for steps_md, answer_md in view.ask_agents(pid, question, patients, flow, history=history, **model):
             steps["text"] = " · ".join(line.strip("-_ ").replace("**", "").replace("`", "")
                                        for line in steps_md.splitlines() if line.strip()) or "Running…"
             shown = [*log, steps] + ([{"role": "agents", "text": answer_md, "meta": "agents"}] if answer_md else [])
-            yield console_html(shown), shown, memory, "", (f"{len(memory)} earlier question(s) in memory"
-                                                           if history is not None else "Session memory is off.")
+            yield console_html(shown), shown, memory, "", f"{len(memory)} earlier question(s) in memory"
         # the final yield above already holds the answer; keep it as the new log
 
     def agent_operate(st, goal, prefs, log):
@@ -589,7 +574,7 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
             after = session.simulated.get(session.key())
             ops = ", ".join(surgeon_label(h["operation"]) for h in session.history) or "no operation yet"
             changes = changed_voxels(session.original, session.tags, st["spacing"], st["origin"])
-            surface = demo.tags_surface(session.tags, st["spacing"], st["origin"])
+            surface = view.tags_surface(session.tags, st["spacing"], st["origin"])
             title = f"{st['name']} · agent: {ops}" + (f" · OpenFOAM {after['total_resistance']:.3f} Pa·s/cm³" if after else " · not simulated")
             table = region_table(before, after) if (before and after and session.history) else (region_table(after) if after else None)
             vol = ps.edited_volume(session.original, session.tags, st["spacing"])
@@ -623,11 +608,11 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
             final = {"role": "agents", "text": f"**Surgeon agent failed:** {out['error']}", "meta": "surgeon"}
         else:
             res = out["result"]
-            final = {"role": "agents", "text": demo.as_markdown(res["summary"]) + f"\n\n_{res['seconds']} s · {res['summary_source']} · "
+            final = {"role": "agents", "text": view.as_markdown(res["summary"]) + f"\n\n_{res['seconds']} s · {res['summary_source']} · "
                                                 f"timeline saved as {save_to.name} (Spectator → Watch saved)_", "meta": "surgeon"}
-        *view, _, _, shown, _ = frame(ready_text())
+        *outputs, _, _, shown, _ = frame(ready_text())
         shown = [*shown, final]
-        yield (*view, ready_text(), console_html(shown), shown, gr.update())
+        yield (*outputs, ready_text(), console_html(shown), shown, gr.update())
 
     def ask_local(pid, question, memory, log):
         """Code picks the tools, the distilled student writes the answer; nothing leaves this computer."""
@@ -636,11 +621,12 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
         try:
             out = distill.answer_locally(question, pid, patients, flow)
         except Exception as err:  # Ollama not running or the model not installed
-            answer = {"role": "agents", "text": f"**Local model failed:** {type(err).__name__}. Is the nasal-ollama "
-                                                f"container running with the {distill.STUDENT_MODEL} model?", "meta": "local"}
+            answer = {"role": "agents", "text": f"**No model to answer:** the local model is not reachable "
+                                                f"({type(err).__name__}) and no API key is set. See ⚙ Settings → Setup "
+                                                f"for Ollama, or add a key there.", "meta": "local"}
         else:
             steps["text"] = " · ".join(out["steps"]) + f" · {out['seconds']} s · {out['summary_source']}"
-            answer = {"role": "agents", "text": demo.as_markdown(out["summary"]), "meta": "local"}
+            answer = {"role": "agents", "text": view.as_markdown(out["summary"]), "meta": "local"}
         shown = [*log, steps, answer]
         yield console_html(shown), shown, memory, "", "Local model: nothing is sent off this computer."
 
@@ -666,20 +652,10 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
                 use_key = gr.Button("Use key", variant="primary", min_width=60)
                 test_key = gr.Button("Test", elem_classes="signal", min_width=60)
                 forget_key = gr.Button("Forget", elem_classes="signal", min_width=60)
-            answers_from = gr.Radio(["Cloud agents (API key)", "Local distilled Qwen (no API)"], value="Cloud agents (API key)", label="Answers from")
-            remember_questions = gr.Checkbox(value=True, label="Send earlier questions of this session as context")
-            gr.Markdown("The key stays in this app's memory for your browser session, and in the credential store "
-                        "only if you tick Remember. It is sent only to that provider and never shown in full.",
+            gr.Markdown("Used by the surgeon agent, and by the console when the local model is not installed. The "
+                        "key stays in this app's memory for your browser session, and in the credential store only if "
+                        "you tick Remember. It is sent only to that provider and never shown in full.",
                         elem_classes="note")
-            gr.HTML('<div class="section-head"><span>OpenFOAM</span></div>')
-            cores = gr.Slider(1, max_cores, value=flow.procs, step=1, label="Cores per case")
-            at_once = gr.Slider(1, max_cores, value=flow.parallel, step=1, label="Cases at once")
-            iters = gr.Radio([f"{FAST_ITERATIONS} (fast; within 0.22% of full runs)", "3000 (same as the stored runs)"],
-                             value=f"{FAST_ITERATIONS} (fast; within 0.22% of full runs)" if flow.iterations == FAST_ITERATIONS
-                             else "3000 (same as the stored runs)", label="Iterations")
-            apply_foam = gr.Button("Apply OpenFOAM settings", elem_classes="signal")
-            check_docker = gr.Button("Check Docker", elem_classes="signal")
-            docker_info = gr.Markdown(elem_classes="note")
             gr.HTML('<div class="section-head"><span>Setup</span></div>')
             setup_info = gr.Markdown("Checking what this computer has…", elem_classes="note")
             recheck = gr.Button("Recheck setup", elem_classes="signal")
@@ -687,7 +663,6 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
             with gr.Column(elem_id="sidebar", scale=0, min_width=258):
                 gr.HTML(f'<div class="section-head"><span>Patients</span><span class="count">{len(ids)}</span></div>')
                 pid = gr.Dropdown(ids, value=default, label="NasalSeg CT", container=True)
-                source = gr.Radio(["Expert labels", "Automatic (from the CT)"], value="Expert labels", label="Airway from")
                 build = gr.Button("Open airway", variant="primary", elem_classes="signal")
                 gr.HTML('<div class="section-head"><span>Upload</span></div>')
                 upload = gr.File(label="CT scan: DICOM (.zip or slice files), NIfTI or NRRD", file_count="multiple",
@@ -738,7 +713,6 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
                         air_btn = gr.Button("Run airflow", elem_classes="signal")
                         procedures = gr.CheckboxGroup(list(PROCEDURE_NAMES), value=["Turbinate reduction", "Valve repair"],
                                                       label="Procedures")
-                        apply_btn = gr.Button("Apply plan", elem_classes="signal")
                         sim_btn = gr.Button("Run airflow on plan", elem_classes="signal")
                         all_btn = gr.Button("Run all 7 plans", elem_classes="signal")
                         reset_btn = gr.Button("Show original airway", elem_classes="signal")
@@ -759,11 +733,10 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
                                               "is set by its own data policy.", elem_classes="note")
 
         view_out = [plot, table, ranking, info]
-        build.click(reconstruct, [pid, upload, source], [state, *view_out, status])
-        app.load(reconstruct, [pid, upload, source], [state, *view_out, status])
+        build.click(reconstruct, [pid, upload], [state, *view_out, status])
+        app.load(reconstruct, [pid, upload], [state, *view_out, status])
         air_btn.click(simulate_original, [state], [*view_out, status, live_chart])
         reset_btn.click(show_original, [state], view_out)
-        apply_btn.click(operate, [state, procedures], [state, *view_out])
         sim_btn.click(plan_once, [state, procedures], [state, *view_out, status, live_chart])
         all_btn.click(plan_all, [state, procedures], [state, *view_out, status, live_chart])
         for trigger in (send.click, question.submit):
@@ -798,7 +771,7 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
             figure = gr.update()
             if redraw:
                 tags, result = tl.tags_at(step), tl.result_at(step)
-                surface = demo.tags_surface(tags, tl.spacing, tl.origin)
+                surface = view.tags_surface(tags, tl.spacing, tl.origin)
                 title = (f"{tl.name} · step {step} · {event['actor']}: {event['text'][:60]}"
                          + (f" · OpenFOAM {result['total_resistance']:.3f} Pa·s/cm³" if result else ""))
                 figure = plot_theme(airway_figure(surface, title, result, tl.changes_at(step)))
@@ -861,8 +834,8 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
             return "No API key yet: paste one below and press Use key."
 
         def model_text(prefs) -> str:
-            if prefs.get("answers_from") == "Local distilled Qwen (no API)":
-                return f"Local · {distill.STUDENT_MODEL}"
+            if local_ready():
+                return f"Answers: local {distill.STUDENT_MODEL}"
             name = prefs.get("provider") or providers.DEFAULT
             if prefs.get("api_key") or (name == "OpenAI" and os.environ.get("OPENAI_API_KEY")):
                 return f"{name} · {prefs.get('model') or default_model(name)}"
@@ -872,7 +845,7 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
             saved = settings.load_saved() or {}
             name = saved.get("provider") or providers.DEFAULT
             prefs = {"api_key": saved.get("key"), "saved": bool(saved), "provider": name, "base_url": saved.get("base_url"),
-                     "model": default_model(name), "remember_questions": True, "answers_from": "Cloud agents (API key)"}
+                     "model": default_model(name)}
             return prefs, key_text(prefs), model_text(prefs), name, prefs["model"], saved.get("base_url") or ""
 
         def set_key(text, remember, chosen, model, base_url, prefs):
@@ -909,13 +882,6 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
         def set_pref(name):
             return lambda value, prefs: {**prefs, name: value}
 
-        def apply_openfoam(n_cores, n_cases, iteration_choice):
-            flow.procs, flow.parallel = int(n_cores), int(n_cases)
-            flow.iterations = int(iteration_choice.split()[0])
-            note = (" Cores × cases is more than this machine has; runs will share cores."
-                    if flow.procs * flow.parallel > max_cores else "")
-            return ready_text(), ready_text() + "." + note
-
         app.load(load_prefs, None, [prefs, key_status, model_label, provider_pick, model_box, base_url_box])
         open_settings.click(lambda: gr.Sidebar(open=True), None, [settings_bar])
         key_inputs = [key_box, remember_key, provider_pick, model_box, base_url_box, prefs]
@@ -925,13 +891,9 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
         test_key.click(check_key, [prefs], [key_status])
         forget_key.click(drop_key, [prefs], [prefs, key_status, model_label])
         provider_pick.input(pick_provider, [provider_pick, prefs], [prefs, model_box, model_label, key_status])
-        for comp, name in ((model_box, "model"), (base_url_box, "base_url"), (remember_questions, "remember_questions"),
-                           (answers_from, "answers_from")):
+        for comp, name in ((model_box, "model"), (base_url_box, "base_url")):
             comp.change(set_pref(name), [comp, prefs], [prefs])
-        for comp in (answers_from, model_box):
-            comp.change(lambda p: model_text(p), [prefs], [model_label])
-        apply_foam.click(apply_openfoam, [cores, at_once, iters], [status, docker_info])
-        check_docker.click(lambda: settings.docker_status(IMAGE), None, [docker_info])
+        model_box.change(lambda p: model_text(p), [prefs], [model_label])
 
         def run_setup_checks():
             """The setup list for Settings, and a banner when something the studio needs is missing."""

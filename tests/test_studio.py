@@ -41,13 +41,13 @@ def test_region_table_reports_change():
 def test_plan_ranking_lists_every_plan_with_openfoam_drops():
     results = {"none": {"total_resistance": 2.0}, "turbinate_reduction": {"total_resistance": 1.8},
                "turbinate_reduction+valve_repair": {"total_resistance": 1.5}}
-    table = studio.plan_ranking(results, ("turbinate_reduction",))
+    table = studio.plan_ranking(results)
     assert len(table) == len(ps.candidate_plans())
     assert table["plan"].iloc[0] == "turbinate reduction + valve repair"
     assert table["OpenFOAM drop %"].tolist()[:2] == pytest.approx([25.0, 10.0])
     assert table["OpenFOAM drop %"].tolist()[2:] == ["not run"] * (len(table) - 2)
-    assert table["standard rule"].tolist().count("picks") == 1 and table["standard rule"].iloc[1] == "picks"
-    assert set(studio.plan_ranking({}, ())["OpenFOAM drop %"]) == {"not run"}
+    assert list(table.columns) == ["plan", "OpenFOAM drop %"]  # no placeholder standard-rule column
+    assert set(studio.plan_ranking({})["OpenFOAM drop %"]) == {"not run"}
 
 
 

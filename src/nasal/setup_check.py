@@ -24,7 +24,7 @@ OLLAMA = "http://127.0.0.1:11434"
 STUDIO_PACKAGES = {"gradio": "gradio", "plotly": "plotly", "skimage": "scikit-image", "sklearn": "scikit-learn",
                    "nrrd": "pynrrd", "pydicom": "pydicom", "nibabel": "nibabel", "openai": "openai",
                    "scipy": "scipy", "joblib": "joblib"}
-INSTALL = 'pip install -e ".[demo,segment,agents,patients]"'
+INSTALL = 'pip install -e ".[studio,segment,agents,patients]"'
 
 
 def _item(name: str, ok: bool, detail: str, fix: str = "", without: str = "", optional: bool = False) -> dict:

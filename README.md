@@ -12,10 +12,10 @@ Built for the NVIDIA x Red Hat Small Models Hack; see [SUBMISSION.md](SUBMISSION
 - **Four agents** on OpenAI's API by default (`gpt-4.1-mini`, `store=False`), or Anthropic, Google Gemini, OpenRouter or any OpenAI-compatible endpoint. Code validates every tool call, and every number the Explainer writes is checked against the tool results. For real patients, every number the agents report comes from OpenFOAM. Their reliability on OpenAI has not been measured yet (`nasal-agents --eval`).
 - **Virtual surgery, verified in OpenFOAM:** on 10 obstructed real airways, Workflow++ reached the best plan's drop for 10 of 10 and the standard rule for 1 of 10. Workflow++ picked turbinate reduction with valve repair for all 10, so the same fixed plan for everyone does exactly as well; this sample shows no benefit of personalization yet.
 - **Data:** every simulated result (125 patients, 96 surgery runs, 106 idealized airways, surrogates) is in [dataset/](dataset/README.md), CC BY 4.0.
-- **Apps:** `nasal-studio`, CT to airway, OpenFOAM, virtual surgery and agents in one window; `nasal-demo`, a 3D resistance map of a real patient with what-if sliders and live agent steps.
+- **App:** `nasal-studio`: CT to airway, OpenFOAM, virtual surgery and agents in one window (start it with `start-studio.bat` or `./start-studio.sh`).
 
 ```bash
-pip install -e ".[dev,sim,surrogate,agents,patients,demo]"
+pip install -e ".[dev,sim,surrogate,agents,patients,studio]"
 pytest
 ```
 
@@ -67,7 +67,6 @@ The agent count stays at four: more agents mostly add latency and failure points
 | Fast stand-in model | PyTorch MLP (tubes), power law on measured geometry (patients) | **Done**: `nasal.surrogate`, `nasal-surrogate` |
 | Decision rules (standard and improved) | Plain Python functions | **Prototype**: `nasal.decision` (tubes) and `nasal.decision.patient` (real airways, verified in OpenFOAM); thresholds are placeholders pending ENT review |
 | Comparison and logging | pandas + JSON agent log | **Done**: `nasal-agents --log` |
-| Demo | Gradio + Plotly | **Done**: `nasal.demo`, `nasal-demo` |
 | Local explainer (distilled Qwen) | Qwen2.5-14B teacher in Ollama (Docker), LoRA on Qwen2.5-1.5B (PyTorch, PEFT) | **First version**: `nasal.distill`, `nasal-distill`, `scripts/distill_train.py`; `nasal-explainer` (0.99 GB) in Ollama; see Local explainer |
 | Studio (CT to surgery in one app) | Gradio + Plotly, OpenFOAM in Docker | **First version**: `nasal.studio`, `nasal-studio`, with the live OpenFOAM view (`nasal.live`) and spectator mode (`nasal.spectator`); see Studio |
 | Language model | OpenAI API (`openai` Python client), key from Settings or `OPENAI_API_KEY` | **Done**: see Agents usage |
@@ -79,7 +78,7 @@ The agent count stays at four: more agents mostly add latency and failure points
 3. **Train the fast model** on the simulation results, recording its error and speedup. *(done; see Fast surrogate)*
 4. **Wire up the agents**: the Case agent sets parameters, the Planner calls the fast model, the formula and what-if tools, the Critic checks the results and the Explainer writes the summary. *(done; the placeholder decision rules are not wired in yet)*
 5. **Verify with real simulation**: for a sample of cases, run virtual surgery in OpenFOAM and compare both rules' plans against it. This produces the results table. *(done on 10 real airways; see Step 5)*
-6. **Demo**: sliders change the anatomy, the resistance map updates, and agent steps appear live with surrogate error and speed. *(done for real patients; see Demo)*
+6. **App**: open a CT, run OpenFOAM live, try plans, let the agent operate and replay what it did. *(done; see Studio)*
 7. **Doctor's check**: at least one ENT review of the rules.
 
 ## Case parameters
@@ -185,7 +184,7 @@ No constants have been fitted yet.
 
 The folds are grouped by patient: the duplicate scans in NasalSeg (P002/P003, P009/P010, P080/P081, `params.DUPLICATE_SCANS`) are always held out together. With ungrouped folds the errors were within 0.6 points of these.
 
-It underpredicts the most obstructed sides (about 2.6 Pa·s/cm³ in OpenFOAM, predicted about 0.34). The agents therefore use OpenFOAM results for real patients, not this surrogate; the demo's instant what-if sliders still use it.
+It underpredicts the most obstructed sides (about 2.6 Pa·s/cm³ in OpenFOAM, predicted about 0.34). The agents and the studio therefore use OpenFOAM results for real patients, not this surrogate.
 
 ## Smooth walls and label repair (in progress)
 
@@ -244,7 +243,7 @@ Everything above starts from NasalSeg's expert-drawn labels. `nasal.segment` sta
 pip install -e ".[dev]"
 nasal-generate -n 300 --seed 0 --out data          # writes data/cases.csv
 nasal-generate -n 300 --seed 0 --out data --stl    # also writes one STL per side per case
-pip install -e ".[dev,agents,patients,segment,demo]" && pytest   # what CI runs; torch and gmsh tests skip without them
+pip install -e ".[dev,agents,patients,segment,studio]" && pytest   # what CI runs; torch and gmsh tests skip without them
 ```
 
 `data/cases.csv` has one row per case: the parameters, total and per-side resistance and flow, and resistance for each side and region.
@@ -293,15 +292,6 @@ nasal-patients simulate --labels data/segment_auto --ids P022 P064 --out data/se
 
 `simulate` skips patients already in its output, so it can resume, and logs a failed patient and moves on. Each patient takes several minutes on 4 cores (we did not time them individually). We ran 12 batches of `--procs 4` on a 48-core Brev instance, each with its own `--out`, and trained on all the files together. With `data/patient_sim.csv` and `data/patient_surrogate.json` present, `nasal-agents` also accepts requests about a patient by id (for example "patient P022: what if the left narrowest section were 30% wider?").
 
-### Demo
-
-```bash
-pip install -e ".[demo]"
-nasal-demo --labels nasalseg/labels    # needs data/patient_sim.csv and data/patient_surrogate.json
-nasal-demo --labels nasalseg/labels --share    # also prints a public gradio.live link (valid 72 h; keep this machine up)
-```
-
-The demo opens at http://127.0.0.1:7860.
 
 - **Patient:** pick any simulated NasalSeg patient (it opens on P022, whose left side has three times the right's resistance).
 - **3D airway:** an interactive Plotly view colored by each region's resistance, from that patient's OpenFOAM run or from the surrogate.
@@ -318,16 +308,16 @@ nasal-studio --images nasalseg/images --labels nasalseg/labels    # also lists t
 
 One window, laid out like the [VOCO](https://github.com/h3clinic/VOCO) desktop app: patients on the left, the airway in the middle, commands on the right and the agents as the console below.
 
-- **CT to airway:** upload a CT scan: DICOM (a .zip of the series or the slice files, which may have no extension), NIfTI or NRRD. A full-head scan is cropped to the nose (see Any CT in), and the info panel says how the scan was read and cropped. With `--images` and `--labels`, the NasalSeg patients are listed too. The airway comes from the expert labels or from automatic segmentation (needs `data/segment_model.joblib` from `nasal-segment train`).
+- **CT to airway:** upload a CT scan: DICOM (a .zip of the series or the slice files, which may have no extension), NIfTI or NRRD. A full-head scan is cropped to the nose (see Any CT in), and the info panel says how the scan was read and cropped. With `--images` and `--labels`, the NasalSeg patients are listed too. NasalSeg patients open with their expert labels; uploaded scans are segmented automatically (needs `data/segment_model.joblib` from `nasal-segment train`).
 - **Airflow:** every resistance shown comes from OpenFOAM: the stored run where one exists, otherwise **Run airflow** starts one in Docker. The patient surrogate is not used here, because on some airways it is off by more than 30% (P022: 0.141 against OpenFOAM's 0.263 Pa·s/cm³).
-- **Virtual surgery:** tick turbinate reduction, valve repair or septoplasty, see the voxels each one adds, then run OpenFOAM on the plan or on all 7 plans. The table ranks the plans by OpenFOAM's resistance drop and marks the standard rule's pick.
-- **Faster local runs:** app runs stop at 900 iterations instead of 3000 and use up to 8 cores each, two cases at a time on a 20-core machine (`--procs`, `--iterations`). In the 13 stored 3000-iteration patient runs, total flow at iteration 600 was already within 0.11% of the final value, and P022 run this way matched its stored run within 0.22% in every region in 237 s.
+- **Virtual surgery:** tick turbinate reduction, valve repair or septoplasty and press **Run airflow on plan**. The airway with the change is shown at once, with the air it adds and removes in mm³, and OpenFOAM runs unless a stored run exists. **Run all 7 plans** does every combination, and the table ranks them by OpenFOAM's resistance drop.
+- **Faster local runs:** app runs stop at 900 iterations instead of 3000 and use up to 8 cores each, two cases at a time on a 20-core machine; `--procs` and `--iterations` change that when starting the studio. In the 13 stored 3000-iteration patient runs, total flow at iteration 600 was already within 0.11% of the final value, and P022 run this way matched its stored run within 0.22% in every region in 237 s.
 - **Setup:** at start the studio checks Python packages, Docker, the OpenFOAM image, the segmentation model, Ollama and its model, the NasalSeg folders and the stored results (`nasal.setup_check`). Settings → Setup lists each one with a plain fix and what still works without it, and **Recheck** runs them again. A banner at the top names anything missing that the studio needs.
-- **Settings** (top right): paste an API key from OpenAI, Anthropic (Claude), Google Gemini or OpenRouter and press **Use key**; the provider is detected from the key, and a custom OpenAI-compatible address (for example a local Ollama server) can be set instead. It stays in the app's memory for that browser session; tick **Remember on this computer** to keep it in the operating system's credential store (Windows Credential Manager, through `keyring`), never in a file. **Test** checks the key with OpenAI and **Forget** removes it. The panel also sets the OpenAI model, whether earlier questions are sent as context, and OpenFOAM's cores per case, cases at once and iterations (900, or 3000 to match the stored runs), and checks that Docker is running.
+- **Settings** (top right): paste an API key from OpenAI, Anthropic (Claude), Google Gemini or OpenRouter and press **Use key**; the provider is detected from the key, and a custom OpenAI-compatible address (for example a local Ollama server) can be set instead. It stays in the app's memory for that browser session; tick **Remember on this computer** to keep it in the operating system's credential store (Windows Credential Manager, through `keyring`), never in a file. **Test** checks the key with OpenAI and **Forget** removes it. The panel also sets the model; the surgeon agent uses it, and so does the console when the local model is missing.
 - **Live airflow:** while any OpenFOAM run started from the app is going (yours or the surgeon agent's), the Airway tab shows the solver as it works instead of a waiting message. Every 25 iterations the case samples the wall pressure over the whole airway and the air speed on three planes (one sagittal plane through each nasal cavity, one axial plane through both). The 3D view shows them on the airway, and a chart below plots the resistance at each iteration, computed from the nostril flows, together with the solver residuals. The top bar gives the iteration, the flow and the current resistance. These are the steady solver's intermediate states on its way to the result, not a time-accurate breath, and the inlet pressure ramps up over the first 300 iterations. `nasal.live` reads the running case and keeps only the newest sample on disk. Stored and command-line runs do not sample, so their results are unchanged.
 - **Surgeon agent** (Commands): type a goal and press **Let the agent operate**. The agent reads where the resistance sits, operates with the parametric techniques below, runs OpenFOAM on its airway, undoes what does not help and finishes with a verified result. The 3D view redraws after every cut (added air in green), shows each of the agent's OpenFOAM checks live and is recolored after every result. The console lists each tool call and ends with the agent's summary, which passes the number check or is replaced by a code summary.
 - **Spectator:** the Spectator tab replays every change made to the open airway, by you or by the surgeon agent, step by step. That includes what the agent said, each tool call (rejected ones too), each cut and undo, and each OpenFOAM start and result. Step through it, press **Play**, or leave **Follow live** on to watch an agent while it works. Each step shows the airway at that point, with every voxel added or removed since the original, and its OpenFOAM result if that airway was simulated. A chart shows the resistance at every simulated step. **Save session** writes the timeline to `data/spectator/` (one .npz: the original airway plus only the changed voxels of each step), and **Watch saved** replays a saved session later (`nasal.spectator`). A surgeon-agent run also saves itself there after every OpenFOAM result and when it finishes, so it can still be replayed if the browser page reconnects mid-run.
-- **Answers from** (Settings): **OpenAI agents**, or **Local distilled Qwen (no API)**, where code picks the tools from the question and the distilled student writes the answer on this computer (see Local explainer). The local option needs the `nasal-explainer` model in Ollama; nothing is sent off the computer.
+- **Console:** questions about the open patient are answered by the local distilled model when Ollama has `nasal-explainer`: code picks the tools from the question, the student writes the answer on this computer, and nothing is sent off it (see Local explainer). Without the local model, the four cloud agents below answer, with the API key from Settings.
 - **Agents:** the console sends a question to the four agents, which read the same OpenFOAM results and can start the same runs as the app. They run on OpenAI's API only, with the key from Settings (or `OPENAI_API_KEY`) and the model set there (default `gpt-4.1-mini`, or `NASAL_OPENAI_MODEL`), with `store=False`. Earlier questions are kept as context only in the app's memory for that browser session, and **Clear** forgets them. Only the patient id, the question and computed numbers are sent, never the CT. Under OpenAI's API policy that data is not used for training, but it may be kept up to 30 days for abuse monitoring unless the organization has zero data retention. If OpenAI refuses a request (no credits, a bad key, an unknown model), the console says so in plain words.
 
 ### Agents
