@@ -6,7 +6,8 @@ pathologies with a random side and severity, drawn from a fixed seed so every ca
 - turbinate_hypertrophy: the lateral wall of the turbinate region grows inward (the opposite of turbinate
   reduction);
 - valve_collapse: the valve region narrows sideways and vertically;
-- septal_deviation: the septum moves toward one side in the valve and turbinate regions;
+- septal_deviation: a local bulge of the septum toward one side in the middle of the valve and turbinate
+  regions, trading air one for one between the cavities (the inverse of the local septoplasty);
 - choanal_narrowing: the choana region narrows on one side.
 
 Each layer is one voxel (about 0.6 mm in-plane, 1.5 mm between slices). Severities and combinations are
@@ -56,17 +57,36 @@ def choanal_narrowing(tags, cuts, spacing, side):
     return _shrink(tags, cuts, side, ("choana",), [(0, 1), (0, -1), (2, 1), (2, -1)])
 
 
+BULGE_SHARE = 0.5  # the bulge covers the middle half of the septum front to back and top to bottom
+
+
 def septal_deviation(tags, cuts, spacing, side):
-    """Septum moves toward `side`: that cavity loses its medial layer, the other gains one."""
-    other = "right" if side == "left" else "left"
-    lab = anatomy.LABELS[side]
-    names = anatomy.region_names(tags)
-    medial = -ps.LATERAL[side]
-    own = (tags == lab) & np.isin(names, [f"{side}_valve", f"{side}_turbinate"])
-    boundary = own & ~ps._shift(tags == lab, 0, -medial)
+    """A local septal bulge toward `side`, one voxel per call: in the central patch of the valve and turbinate
+    septum, the septum moves into the `side` cavity, which gives up its medial voxel while the other cavity gains
+    one, so the septum keeps its thickness. It is the inverse of `decision.patient.septoplasty`, which moves rows
+    that stray from a plane fitted to the (mostly straight) rest of the septum back toward it."""
+    rows = ps.septum_rows(tags, spacing)
+    if not len(rows["j"]):
+        return tags
     out = tags.copy()
-    out[boundary] = 0
-    return ps._grow(out, cuts, other, ("valve", "turbinate"), [(0, -ps.LATERAL[other])])
+    right_lab, left_lab = anatomy.LABELS["right"], anatomy.LABELS["left"]
+    patch = np.ones(len(rows["j"]), dtype=bool)
+    for idx in (rows["j"], rows["k"]):
+        lo, hi = np.quantile(idx, [(1 - BULGE_SHARE) / 2, (1 + BULGE_SHARE) / 2])
+        patch &= (idx >= lo) & (idx <= hi)
+    for j, k, r_edge, l_edge in zip(rows["j"][patch], rows["k"][patch], rows["right_edge"][patch], rows["left_edge"][patch]):
+        row = out[:, j, k]
+        if side == "left":  # the septum moves toward the patient's left (+x): left loses, right gains
+            if (row == left_lab).sum() <= 1:
+                continue
+            row[l_edge] = 0
+            row[r_edge + 1] = right_lab
+        else:
+            if (row == right_lab).sum() <= 1:
+                continue
+            row[r_edge] = 0
+            row[l_edge - 1] = left_lab
+    return out
 
 
 OPERATORS = {"turbinate_hypertrophy": turbinate_hypertrophy, "valve_collapse": valve_collapse,

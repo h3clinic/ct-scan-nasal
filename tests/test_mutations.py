@@ -36,11 +36,15 @@ def test_reduction_roughly_undoes_hypertrophy():
     assert ((restored > 0) != (tags > 0)).sum() <= 0.35 * ((tags > 0) & (narrowed == 0)).sum()
 
 
-def test_septal_deviation_moves_air_between_the_sides():
+def test_septal_bulge_trades_air_one_for_one_in_a_central_patch():
     tags, cuts = airway()
     out = mutations.septal_deviation(tags, cuts, SPACING, "left")
     left, right = anatomy.LABELS["left"], anatomy.LABELS["right"]
-    assert (out == left).sum() < (tags == left).sum() and (out == right).sum() > (tags == right).sum()
+    lost, gained = (tags == left).sum() - (out == left).sum(), (out == right).sum() - (tags == right).sum()
+    assert lost > 0 and lost == gained  # the septum moves, keeping its thickness
+    changed = np.argwhere(out != tags)
+    rows = ps.septum_rows(tags, SPACING)
+    assert changed[:, 1].min() > rows["j"].min() and changed[:, 1].max() < rows["j"].max()  # local, not end to end
 
 
 def test_severity_is_lowered_rather_than_closing_a_side():
