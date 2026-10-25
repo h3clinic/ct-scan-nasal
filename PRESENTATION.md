@@ -50,7 +50,7 @@ Everything for a live presentation: setup, the word-for-word script with clicks,
 
 > "Then we tested decisions. On the 10 most obstructed airways, we ran virtual surgery for every combination of turbinate reduction, valve repair and septoplasty, and checked each in OpenFOAM: 80 simulations.
 >
-> The plan picked from the resistance map matched the best plan for 10 out of 10 patients. The look-at-the-scan rule managed 1 in 10."
+> The plan picked from the resistance map came within 90% of the best plan for 8 out of 10 patients. The look-at-the-scan rule managed 1 in 10. And the same plan for everyone did just as well, so the next step is to show when tailoring the plan pays off."
 
 **[Gallery: Agents section] (3:20)**
 
@@ -79,7 +79,7 @@ It's a standard steady-state OpenFOAM setup (k-omega SST turbulence model). The 
 A simulation takes minutes on many cores. The surrogate takes well under a millisecond, but on some airways it is off by more than 30%, so for real patients the agents and the studio read OpenFOAM results instead, and the studio runs a missing case in a few minutes.
 
 **How good is the surrogate?**
-On real airways it averages a 16% error per side, against 30% for simply guessing the average patient. Its estimates of how much a surgery plan helps are rough (correlation 0.51 with OpenFOAM), which is why plans were scored in OpenFOAM.
+On real airways it averages a 16% error per side, against 30% for simply guessing the average patient. Its estimates of how much a surgery plan helps are rough (correlation 0.38 with OpenFOAM), which is why plans were scored in OpenFOAM.
 
 **Why one model for four agents?**
 Four roles with separate tools and checks, on one model, keep it simple and cheap. More agents mostly add latency and failure points.
@@ -91,7 +91,7 @@ Code computes every number. The Explainer's text is checked number by number aga
 No. The agents use an OpenAI model as offered, with its standard tool calling.
 
 **Septoplasty made things worse?**
-In our model, yes, but that's an artifact: our voxel version of septoplasty removes more airway than it adds. It's not a finding about real septoplasty.
+It did in our first version, because that voxel septoplasty removed more airway than it added. Now it straightens only the parts of the septum that bulge and keeps its thickness, and on its own it is neutral (0.2% lower on average); added to turbinate reduction and valve repair it helped 5 of the 10 patients, by up to 1.6 points.
 
 **Where is NVIDIA used?**
 NVIDIA Brev CPU instances ran the OpenFOAM simulations. We also tried NVIDIA's NV-Generate-CT model for synthetic CT. The agents run on OpenAI's API.
@@ -109,5 +109,5 @@ A surgeon reviewing the decision rules, smoother airway walls, and more patients
 | CT airways | 130 (126 simulated) |
 | Median nasal resistance | 0.146 Pa·s/cm³ at 150 Pa |
 | Surrogate | 16% side error vs 30% baseline; under 1 ms |
-| Virtual surgery | map-driven plan matched best 10/10; look-at-the-scan rule 1/10; 80 simulations |
+| Virtual surgery | map-driven plan within 90% of best for 8/10 (a fixed plan ties it); look-at-the-scan rule 1/10; 80 simulations |
 | Agents | four roles on one OpenAI model (`gpt-4.1-mini` by default); reliability not yet measured on OpenAI |

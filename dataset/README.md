@@ -59,17 +59,17 @@ Everything here is simulation output. No CT images or labels are included.
 - `total_resistance`, `left_resistance`, `right_resistance`: Pa·s/cm³ at 150 Pa.
 - `{side}_{region}_resistance`: per region, regions `vestibule`, `valve`, `turbinate`, `choana`.
 - `*_flow_cm3_s`: flow in cm³/s.
-- Virtual surgery: `plan` (procedures joined by `+`, or `none`), `surrogate_total` (prediction for that plan by `models/patient_surrogate.json`, recomputed for every patient after the retraining), `standard_plan` (look-at-the-scan rule), `plus_plus_plan` (map-driven Workflow++ rule).
+- Virtual surgery: `plan` (procedures joined by `+`, or `none`), `surrogate_total` (prediction for that plan by `models/patient_surrogate.json`, recomputed for every patient after the retraining), `standard_plan` (look-at-the-scan rule), `plus_plus_plan` (map-driven Workflow++ rule, `none` below the 5% minimum benefit), `added_mm3` and `removed_mm3` (airway the plan adds and removes; the modeled airway, not tissue removed in surgery).
 
 ## Results in brief
 
 - Median nasal resistance across 125 patients: 0.146 Pa·s/cm³.
 - Patient surrogate: 16.2% mean side error (cross-validated, duplicate scans in one fold) against 30.1% for an average-patient guess.
-- Virtual surgery on 10 distinct obstructed airways: the map-driven plan matched the best OpenFOAM plan for 10 of 10 patients, the look-at-the-scan rule for 1 of 10. The map-driven plan was turbinate reduction with valve repair for every patient, and that fixed plan alone does equally well.
+- Virtual surgery on 10 distinct obstructed airways: the map-driven plan came within 90% of the best OpenFOAM plan for 8 of 10 patients, the look-at-the-scan rule for 1 of 10. The map-driven plan was turbinate reduction with valve repair for every patient, and that fixed plan alone does equally well.
 
 ## Limits
 
-Rigid walls, one steady breath, no mucosa, voxel-resolution walls. The voxel septoplasty removes more airway than it adds, so it raises resistance in this model; that is a modeling artifact. NasalSeg contains duplicate scans (P002/P003, P009/P010, P080/P081).
+Rigid walls, one steady breath, no mucosa, voxel-resolution walls. Septoplasty straightens local bulges of the septum and keeps its thickness (the rows with septoplasty were re-run with this version; the first release used a version that removed airway). NasalSeg contains duplicate scans (P002/P003, P009/P010, P080/P081).
 
 **Fixed in `patients/openfoam_results.csv`:** 9 NasalSeg label files (P025, P042, P074, P089, P100, P101, P108, P118, P129) have a vertical axis that is flipped in their header but not in their voxels. The first release computed those patients' OpenFOAM rows on the upside-down airway, with the outlet cut at the wrong end of the nasopharynx. The 8 that have rows were re-run in the CT's orientation and their rows replaced; total resistance changed by −12% to +5%. P129 is also in `patients/virtual_surgery_openfoam.csv`; its 8 surgery rows were re-run the same way and replaced. P101 has no row, because its nasopharynx does not connect to the cavities in either orientation. The patient surrogate in `models/` was retrained on the corrected rows.
 
