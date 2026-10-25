@@ -64,8 +64,8 @@ Everything here is simulation output. No CT images or labels are included.
 ## Results in brief
 
 - Median nasal resistance across 125 patients: 0.146 Pa·s/cm³.
-- Patient surrogate: 16.3% mean side error (cross-validated) against 29.9% for an average-patient guess.
-- Virtual surgery on 10 distinct obstructed airways: the map-driven plan matched the best OpenFOAM plan for 10 of 10 patients, the look-at-the-scan rule for 1 of 10.
+- Patient surrogate: 16.2% mean side error (cross-validated, duplicate scans in one fold) against 30.1% for an average-patient guess.
+- Virtual surgery on 10 distinct obstructed airways: the map-driven plan matched the best OpenFOAM plan for 10 of 10 patients, the look-at-the-scan rule for 1 of 10. The map-driven plan was turbinate reduction with valve repair for every patient, and that fixed plan alone does equally well.
 
 ## Limits
 

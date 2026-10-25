@@ -190,9 +190,13 @@ def label(plan: tuple[str, ...]) -> str:
     return "+".join(plan) or "none"
 
 
+FIXED_PLAN = "turbinate_reduction+valve_repair"  # baseline: the same plan for every patient, no personalization
+
+
 def compare_surgery(sim: pd.DataFrame) -> pd.DataFrame:
     """Per patient: OpenFOAM drop of each rule's plan, the plan OpenFOAM finds best, and whether
-    Workflow++ (chosen with the surrogate) lands in OpenFOAM's near-best set.
+    Workflow++ (chosen with the surrogate) lands in OpenFOAM's near-best set. The fixed plan (FIXED_PLAN for
+    everyone) is scored the same way, so a rule only shows personalization if it beats that baseline.
 
     `sim` has one row per patient and plan with columns patient, plan, total_resistance
     (OpenFOAM), surrogate_total, standard_plan and plus_plus_plan."""
@@ -213,6 +217,8 @@ def compare_surgery(sim: pd.DataFrame) -> pd.DataFrame:
             "standard_plan": std, "standard_drop_pct": drops.get(std, np.nan),
             "plus_plus_plan": pp, "plus_plus_drop_pct": drops.get(pp, np.nan),
             "plus_plus_near_best": pp in near, "standard_near_best": std in near,
+            "fixed_drop_pct": drops.get(FIXED_PLAN, np.nan), "fixed_near_best": FIXED_PLAN in near,
+            "plus_plus_is_fixed": pp == FIXED_PLAN,
             "surrogate_drop_error_pct": float(np.mean([abs(100 * (1 - sur[p] / sur["none"]) - drops[p])
                                                        for p in drops if p in sur])),
         })

@@ -7,10 +7,10 @@ A prototype for evaluating nasal airway obstruction. It builds airway geometries
 Built for the NVIDIA x Red Hat Small Models Hack; see [SUBMISSION.md](SUBMISSION.md) for the pitch and track mapping, and [PRESENTATION.md](PRESENTATION.md) for the demo script.
 
 - **Real anatomy:** 130 NasalSeg CT airways, 126 simulated in OpenFOAM on NVIDIA Brev (median nasal resistance 0.146 Pa·s/cm³ at 150 Pa).
-- **Fast surrogate:** under 0.2 ms per prediction, 16.3% mean side error (cross-validated) against 29.9% for "average patient".
+- **Fast surrogate:** under 0.3 ms per prediction, 16.2% mean side error (cross-validated, duplicate scans kept in one fold) against 30.1% for "average patient".
 - **Surgeon agent:** operates on a patient's CT airway with parametric virtual surgery (side, region, depth), checks each candidate in OpenFOAM, undoes what does not help, and shows every change live in the studio. A spectator mode replays every step, and OpenFOAM's wall pressure, air speed and convergence are drawn while the solver runs.
 - **Four agents** on OpenAI's API by default (`gpt-4.1-mini`, `store=False`), or Anthropic, Google Gemini, OpenRouter or any OpenAI-compatible endpoint. Code validates every tool call, and every number the Explainer writes is checked against the tool results. For real patients, every number the agents report comes from OpenFOAM. Their reliability on OpenAI has not been measured yet (`nasal-agents --eval`).
-- **Virtual surgery, verified in OpenFOAM:** on 10 obstructed real airways, Workflow++ reached the best plan's drop for 10 of 10, the standard rule for 1 of 10.
+- **Virtual surgery, verified in OpenFOAM:** on 10 obstructed real airways, Workflow++ reached the best plan's drop for 10 of 10 and the standard rule for 1 of 10. Workflow++ picked turbinate reduction with valve repair for all 10, so the same fixed plan for everyone does exactly as well; this sample shows no benefit of personalization yet.
 - **Data:** every simulated result (125 patients, 96 surgery runs, 106 idealized airways, surrogates) is in [dataset/](dataset/README.md), CC BY 4.0.
 - **Apps:** `nasal-studio`, CT to airway, OpenFOAM, virtual surgery and agents in one window; `nasal-demo`, a 3D resistance map of a real patient with what-if sliders and live agent steps.
 
@@ -162,9 +162,11 @@ No constants have been fitted yet.
 
 | Mean absolute error vs OpenFOAM (5-fold, 125 patients) | Power law | Average patient |
 | --- | --- | --- |
-| Total resistance | 14.4% | 24.6% |
-| Side resistance | 16.3% | 29.9% |
-| Region resistance | 35.4% | 41.5% |
+| Total resistance | 14.2% | 24.8% |
+| Side resistance | 16.2% | 30.1% |
+| Region resistance | 34.8% | 41.6% |
+
+The folds are grouped by patient: the duplicate scans in NasalSeg (P002/P003, P009/P010, P080/P081, `params.DUPLICATE_SCANS`) are always held out together. With ungrouped folds the errors were within 0.6 points of these.
 
 It underpredicts the most obstructed sides (about 2.6 Pa·s/cm³ in OpenFOAM, predicted about 0.34). The agents therefore use OpenFOAM results for real patients, not this surrogate; the demo's instant what-if sliders still use it.
 
@@ -427,10 +429,12 @@ We ran the 12 most obstructed patients whose labels pass the position check. 2 p
 | Plan chosen by | Mean OpenFOAM resistance drop | Within 90% of the best plan's drop |
 | --- | --- | --- |
 | Workflow++ (surrogate) | 10.5% | 10 of 10 (the best plan itself in 8) |
+| Fixed plan: turbinate reduction + valve repair for everyone | 10.5% | 10 of 10 (the best plan itself in 8) |
 | Standard rule | 7.5% | 1 of 10 |
 | Best plan per patient (OpenFOAM) | 10.5% | |
 
 - **Best plan:** turbinate reduction with valve repair was best or near-best for every patient (mean drop 10.5%, up to 26.7%). Turbinate reduction alone averaged 8.2% and valve repair alone 1.9%.
+- **No personalization shown yet:** Workflow++ chose that same plan for all 10 patients, so it ties the fixed-plan baseline (`compare_surgery` reports both). It beats the standard rule because that rule picks turbinate reduction alone or adds septoplasty, not because it tailors plans. Showing that personalization adds value needs cases where different patients need different plans. The surrogate that Workflow++ uses was also fitted on all 125 patients, these 10 included, so this is not a test on unseen patients.
 - **Septoplasty raised resistance** in this model (mean −8.3% alone). The voxel version removes more airway than it adds, so this is an artifact of the model, not a finding about septoplasty. Workflow++ never chose it; the standard rule chose it for 2 patients.
 - **The surrogate ranks plans better than it sizes them:** its predicted drops correlate only 0.51 with OpenFOAM's, with a mean error of 6.2 percentage points (all 12 patients scored with the current surrogate in `dataset/models/`). It still picked the right plan, because the plans' differences were large.
 - **Limits:** this is a 10-patient sample of the most obstructed airways, with one-layer changes, steady flow and rigid walls. The rules' thresholds are unreviewed placeholders.

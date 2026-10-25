@@ -27,11 +27,11 @@ import numpy as np
 from scipy import ndimage
 
 from .anatomy import LABELS, _largest_component, load_labels
+from .params import DUPLICATE_SCANS
 
 AIR_THRESHOLD_HU = -300  # best airway Dice of -150/-200/-300/-400 HU in the grouped CV (0.85); not the best for resistance
 PEAK_MIN_DISTANCE = 3  # voxels between watershed seeds
 MIDLINE_BAND_MM = 4.0
-DUPLICATE_SCANS = {"P003": "P002", "P010": "P009", "P081": "P080"}  # identical geometry in NasalSeg
 FEATURES = ("volume_mm3", "max_dt_mm", "mean_dt_mm", "dx_mm", "min_dx_mm", "y_rel", "y_mm",
             "z_palate_mm", "below_palate_share", "y_palate_back_mm", "mean_hu", "touches_midline", "neighbours")
 BONE_HU = 200

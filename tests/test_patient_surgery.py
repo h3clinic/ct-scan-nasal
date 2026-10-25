@@ -83,6 +83,8 @@ def test_compare_surgery_scores_rules_against_openfoam():
     assert out.openfoam_best_plan == "turbinate_reduction+valve_repair"
     assert out.plus_plus_near_best and not out.standard_near_best
     assert out.standard_drop_pct == pytest.approx(20) and out.plus_plus_drop_pct == pytest.approx(40)
+    # the fixed plan is scored as a baseline: here it is the best plan, and Workflow++ did not pick it
+    assert out.fixed_drop_pct == pytest.approx(42) and out.fixed_near_best and not out.plus_plus_is_fixed
 
 
 def test_every_plan_leaves_one_connected_airway():

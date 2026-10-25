@@ -2,6 +2,8 @@ from dataclasses import asdict, dataclass
 
 SIDES = ("left", "right")
 REGIONS = ("vestibule", "valve", "turbinate", "choana")
+# NasalSeg scans with identical geometry: an evaluation keeps each pair on the same side of every split
+DUPLICATE_SCANS = {"P003": "P002", "P010": "P009", "P081": "P080"}
 
 
 @dataclass(frozen=True)

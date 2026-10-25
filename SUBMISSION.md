@@ -10,7 +10,7 @@ A blocked nose is usually judged by eye: a surgeon looks at a CT scan, sees a be
 - **Fast stand-in:** a surrogate fitted to those simulations answers in a fraction of a millisecond, compared with minutes for a simulation.
 - **Agents:** four agents on **OpenAI's API** (`gpt-4.1-mini` by default) let you ask about a patient in plain language. Every number comes from code: the model chooses tools and explains, and code checks every number it writes. For real patients, those numbers come from OpenFOAM.
 
-When we tested virtual surgery on 10 obstructed real airways, the map-driven plan (Workflow++) matched the best plan found by OpenFOAM in 10 of 10 patients. The look-at-the-scan rule did so in 1 of 10.
+When we tested virtual surgery on 10 obstructed real airways, the map-driven plan (Workflow++) matched the best plan found by OpenFOAM in 10 of 10 patients. The look-at-the-scan rule did so in 1 of 10. Workflow++ chose turbinate reduction with valve repair for every patient, though, and that fixed plan for everyone does just as well, so this sample does not yet show a benefit of personalization.
 
 ## What we built
 
@@ -18,7 +18,7 @@ When we tested virtual surgery on 10 obstructed real airways, the map-driven pla
 | --- | --- | --- |
 | Real airways | 130 NasalSeg CT scans → nasal cavities + nasopharynx; every voxel becomes an OpenFOAM hex cell | 126 of 130 simulated; median nasal resistance 0.146 Pa·s/cm³ at 150 Pa |
 | Airflow ground truth | OpenFOAM v2606 simpleFoam, k-omega SST, 150 Pa, on Brev CPU instances | 126 patients and 106 idealized cases, plus 80 surgery runs |
-| Fast surrogate | Power law per region on six measured geometry numbers per side | 16.3% mean side error (cross-validated) against 29.9% for "average patient"; under 0.2 ms per prediction |
+| Fast surrogate | Power law per region on six measured geometry numbers per side | 16.2% mean side error (cross-validated, duplicate scans kept in one fold) against 30.1% for "average patient"; under 0.3 ms per prediction |
 | Four agents | Case → Planner → Critic → Explainer, one OpenAI model, each limited to its own tools | Reliability not yet measured on OpenAI |
 | Virtual surgery | Turbinate reduction, valve repair and septoplasty applied to the voxel airway, scored by OpenFOAM | Workflow++ reached the best plan's drop in 10/10; standard rule 1/10 |
 | Apps | Gradio: the studio (CT to airway, OpenFOAM, virtual surgery, agents) and the demo (3D resistance map, what-if sliders, live agent steps) | `nasal-studio`, `nasal-demo` |

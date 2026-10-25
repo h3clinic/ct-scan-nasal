@@ -22,7 +22,7 @@ from pathlib import Path
 
 from . import agents
 from .decision import patient as ps
-from .params import REGIONS, SIDES
+from .params import DUPLICATE_SCANS, REGIONS, SIDES
 from .patient_flow import PatientFlow
 
 TEACHER_MODEL = "qwen2.5:14b-instruct-q4_K_M"
@@ -150,11 +150,11 @@ def user_message(facts: dict, question: str) -> str:
 
 
 def split_patients(pids: list[str], seed: int = 0) -> set[str]:
-    """Held-out patients; duplicate scans (P009/P010, P080/P081) go to the same side."""
-    groups = sorted({{"P010": "P009", "P081": "P080", "P003": "P002"}.get(p, p) for p in pids})
+    """Held-out patients; duplicate scans (params.DUPLICATE_SCANS) go to the same side."""
+    groups = sorted({DUPLICATE_SCANS.get(p, p) for p in pids})
     rng = random.Random(seed)
     test = set(rng.sample(groups, max(1, round(TEST_SHARE * len(groups)))))
-    return {p for p in pids if {"P010": "P009", "P081": "P080", "P003": "P002"}.get(p, p) in test}
+    return {p for p in pids if DUPLICATE_SCANS.get(p, p) in test}
 
 
 METHOD_NUMBERS = (0.6, 90.0, 3000.0, 900.0)  # mm per procedure layer, the 90% rule, solver iterations

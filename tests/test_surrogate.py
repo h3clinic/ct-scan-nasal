@@ -96,3 +96,10 @@ def test_patient_surrogate_learns_geometry_and_beats_the_average(tmp_path):
     assert again.predict(row) == pytest.approx(model.predict(row))
     rec = model.predict(row)
     assert sum(rec[f"left_{r}_resistance"] for r in REGIONS) == pytest.approx(rec["left_resistance"])
+
+
+def test_patient_folds_keep_duplicate_scans_together():
+    table = pd.DataFrame({"patient": [f"P{i:03d}" for i in range(1, 30)]})
+    fold = dict(zip(table.patient, sg.patient_folds(table, folds=5)))
+    assert fold["P002"] == fold["P003"] and fold["P009"] == fold["P010"]
+    assert set(fold.values()) == set(range(5))
