@@ -76,6 +76,8 @@ def turbinate_reduction(tags, cuts, spacing):
 
 
 MAX_SEPTUM_MM = 8.0  # wider gaps between the cavities are not the septum (a modeling choice, not anatomy data)
+SEPTUM_THICKER_VOX = 3  # ... nor a septum more than this many voxels thicker than its median
+BIWEIGHT_MIN_VOX = 2.0  # the septal plane ignores rows further off than this (or 4.685 robust spreads)
 
 
 def septum_rows(tags: np.ndarray, spacing: np.ndarray) -> dict:
@@ -90,22 +92,42 @@ def septum_rows(tags: np.ndarray, spacing: np.ndarray) -> dict:
     xs = np.arange(tags.shape[0])[:, None, None]
     r_edge = np.where(right, xs, -1).max(axis=0)
     l_edge = np.where(left, xs, tags.shape[0]).min(axis=0)
-    gap_mm = (l_edge - r_edge - 1) * spacing[0]
-    rows = both & (l_edge > r_edge) & (gap_mm <= MAX_SEPTUM_MM)  # a septum lies between the two medial edges
+    gap = l_edge - r_edge - 1  # septum thickness, voxels
+    rows = both & (l_edge > r_edge) & (gap * spacing[0] <= MAX_SEPTUM_MM)  # a septum lies between the medial edges
+    if rows.any():
+        # where a cavity's medial air is gone, its "edge" jumps to an air pocket further out and the septum looks
+        # much thicker than elsewhere: such rows do not measure the septum, so they are left out
+        rows &= gap <= np.median(gap[rows]) + SEPTUM_THICKER_VOX
     j, k = np.nonzero(rows)
     out = {"j": j, "k": k, "right_edge": r_edge[rows], "left_edge": l_edge[rows]}
     mid = (out["right_edge"] + out["left_edge"]) / 2.0
     out["midline"], out["deviation"] = mid, np.zeros_like(mid)
     if len(mid) >= 3:
-        # least absolute deviations (iteratively reweighted): the plane follows the straight majority of the
-        # septum, so a local bulge shows up as deviation instead of tilting the plane
-        a = np.column_stack([np.ones_like(mid), j, k])
-        w = np.ones_like(mid)
-        for _ in range(30):
-            coef = np.linalg.lstsq(a * w[:, None], mid * w, rcond=None)[0]
-            w = 1.0 / np.sqrt(np.maximum(np.abs(mid - a @ coef), 1e-3))
-        out["deviation"] = mid - a @ coef
+        out["deviation"] = mid - _septal_plane(mid, j, k)
     return out
+
+
+def _septal_plane(mid: np.ndarray, j: np.ndarray, k: np.ndarray) -> np.ndarray:
+    """The plane the straight part of the septum follows, at each row. Least absolute deviations (iteratively
+    reweighted) first, then Tukey's biweight, which gives rows far off the plane no weight at all: a local bulge
+    then shows up as deviation instead of pulling the plane toward it. The biweight cutoff is set from the
+    septum's own spread (median absolute deviation), but never under BIWEIGHT_MIN_VOX, so that the natural
+    curvature of a septum is not taken for a bulge."""
+    a = np.column_stack([np.ones_like(mid), j, k])
+    w = np.ones_like(mid)
+    for _ in range(30):
+        coef = np.linalg.lstsq(a * w[:, None], mid * w, rcond=None)[0]
+        w = 1.0 / np.sqrt(np.maximum(np.abs(mid - a @ coef), 1e-3))
+    for _ in range(30):
+        resid = mid - a @ coef
+        scale = 1.4826 * np.median(np.abs(resid - np.median(resid)))
+        cutoff = max(4.685 * scale, BIWEIGHT_MIN_VOX)
+        u = resid / cutoff
+        w = np.where(np.abs(u) < 1, (1 - u ** 2) ** 2, 0.0)
+        if w.sum() < 3:
+            break
+        coef = np.linalg.lstsq(a * np.sqrt(w)[:, None], mid * np.sqrt(w), rcond=None)[0]
+    return a @ coef
 
 
 def septoplasty(tags, cuts, spacing, depth: int = 1):

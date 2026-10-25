@@ -191,3 +191,16 @@ def test_no_surgery_is_right_when_no_plan_helps_enough():
     assert out.plus_plus_drop_pct == 0 and out.plus_plus_near_best  # best is 3%, under the 5% minimum benefit
     assert ps.choose_plan({(): 1.0, ("valve_repair",): 0.97}) == ()
     assert ps.choose_plan({(): 1.0, ("valve_repair",): 0.9}) == ("valve_repair",)
+
+
+def test_rows_whose_cavity_edge_jumps_are_not_taken_for_the_septum():
+    tags, cuts = airway()
+    rows_before = ps.septum_rows(tags, SPACING)
+    j = int(np.median(rows_before["j"]))
+    # in one coronal row the left cavity's medial air is gone and only a pocket far out is left
+    pocket = tags[13:16, j] == L
+    tags[13:16, j][pocket] = 0
+    tags[18, j][pocket.any(axis=0)] = L  # 5 voxels further out than the medial edge was
+    after = ps.septum_rows(tags, SPACING)
+    assert j not in set(after["j"])  # that row's "septum" would be far thicker than elsewhere
+    assert len(after["j"]) == len(rows_before["j"]) - (rows_before["j"] == j).sum()

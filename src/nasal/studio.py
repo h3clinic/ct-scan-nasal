@@ -146,8 +146,8 @@ footer { display:none !important; }
   font-size:9px; font-weight:700; color:#b8b8b8; }
 #window-bar strong { color:#eee; letter-spacing:.02em; }
 #window-bar .sub { color:var(--faint); font-size:10px; margin-left:6px; }
-#shell { gap:0 !important; min-height:calc(100vh - 38px); flex-wrap:nowrap !important; }
-#sidebar { background:var(--chrome) !important; border-right:1px solid var(--line) !important; padding:0 8px 10px !important;
+#shell { gap:0 !important; min-height:calc(100vh - 38px); flex-wrap:nowrap !important; align-items:stretch !important; }
+#sidebar { background:var(--chrome) !important; border-right:1px solid var(--line) !important; padding:0 8px 10px !important; align-self:stretch;
   gap:6px !important; flex:0 0 258px !important; max-width:258px; min-width:258px !important; }
 .section-head { display:flex; justify-content:space-between; align-items:center; height:38px; padding:0 4px 0 6px;
   color:#a0a0a0; font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
@@ -163,6 +163,11 @@ label, .wrap label span, .prose, .info, td, th { font-size:11px !important; }
 #setup-banner { background:#2a2414 !important; border-bottom:1px solid #6b5a2a !important; padding:8px 12px !important;
   color:#e8d9a8 !important; font-size:11px; }
 #setup-banner p { margin:0; }
+.slot { margin:8px 10px; padding:10px 12px; border:1px dashed #3c3c3c; border-radius:3px; background:#1d1d1d; }
+.slot.tall { min-height:300px; display:flex; flex-direction:column; justify-content:center; text-align:center; }
+.slot-title { color:#cfcfcf; font-size:11px; font-weight:650; }
+.slot-hint { color:var(--muted); font-size:10px; margin-top:2px; }
+.slot-actions { color:var(--faint); font-size:9px; margin-top:6px; font-family:Consolas, monospace; }
 .pane-title { display:flex; align-items:center; justify-content:space-between; min-height:36px; padding:0 12px;
   background:var(--chrome); border-bottom:1px solid var(--line-soft); color:#d0d0d0; font-size:10px; font-weight:650; }
 #session { gap:0 !important; flex-wrap:nowrap !important; }
@@ -837,8 +842,50 @@ def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, si
     import gradio as gr
 
     actions = make_actions(images_dir, labels_dir, sim_path, segment_model, procs, iterations)
+
+    def slot(title: str, hint: str, actions_here: str, elem_class: str = "slot"):
+        """An empty, labeled place in the template: what goes here and which actions to wire."""
+        gr.HTML(f'<div class="{elem_class}"><div class="slot-title">{title}</div><div class="slot-hint">{hint}</div>'
+                f'<div class="slot-actions">{actions_here}</div></div>')
+
+    # the VOCO desktop template (github.com/h3clinic/VOCO), empty: title bar, patient sidebar, workspace with a
+    # top bar, the main pane and a command column, the console below, and a settings drawer on the right
     with gr.Blocks(title="Nasal0", fill_width=True) as app:
-        gr.HTML('<div id="window-bar"><span class="mark">N0</span><strong>NASAL0</strong></div>')
+        gr.HTML('<div id="window-bar"><span class="mark">N0</span><strong>NASAL0</strong>'
+                '<span class="sub">CT → airway → OpenFOAM → virtual surgery → agents · layout being redesigned</span></div>')
+        with gr.Sidebar(label="Settings", open=False, position="right", width=330, elem_id="settings") as settings_bar:
+            gr.HTML('<div class="section-head"><span>Settings</span></div>')
+            slot("Language model", "API key, provider and model", "load_prefs · set_key · check_key · drop_key · pick_provider")
+            slot("Setup", "what this computer has, with fixes", "run_setup_checks")
+        with gr.Row(elem_id="shell"):
+            with gr.Column(elem_id="sidebar", scale=0, min_width=258):
+                gr.HTML(f'<div class="section-head"><span>Patients</span><span class="count">{len(actions["ids"])}</span></div>')
+                slot("Patient list", "NasalSeg patients (optional)", "ids · default → reconstruct")
+                gr.HTML('<div class="section-head"><span>Upload</span></div>')
+                slot("CT upload", "DICOM, NIfTI or NRRD", "reconstruct(pid, upload)")
+            with gr.Column(elem_id="workspace", scale=1):
+                with gr.Row(elem_id="topbar"):
+                    gr.HTML('<div id="status">ready_text()</div>')
+                    open_settings = gr.Button("⚙ Settings", elem_classes="signal", scale=0, min_width=110)
+                with gr.Row(elem_id="session"):
+                    with gr.Column(elem_id="monitor", scale=1):
+                        gr.HTML('<div class="pane-title"><span>Airway</span><span>OpenFOAM resistance, Pa·s/cm³</span></div>')
+                        slot("3D airway · live airflow", "the airway, its regions and OpenFOAM while it runs",
+                             "plot · live chart from simulate_original · plan_once · plan_all · agent_operate", "slot tall")
+                        slot("Regions and plans", "OpenFOAM per region, and all 7 plans ranked", "region table · plan ranking")
+                        gr.HTML('<div class="pane-title"><span>Spectator</span><span>every change, step by step</span></div>')
+                        slot("Timeline replay", "step, play, follow live, save and watch saved",
+                             "spectate · tick · toggle_play · save_timeline · load_timeline · watch_current")
+                    with gr.Column(elem_id="controls", scale=0, min_width=244):
+                        gr.HTML('<div class="section-head"><span>Commands</span></div>')
+                        slot("Airflow and plans", "run airflow, try a plan, run all 7, back to the original",
+                             "simulate_original · plan_once · plan_all · show_original")
+                        gr.HTML('<div class="section-head"><span>Surgeon agent</span></div>')
+                        slot("Surgeon agent", "a goal, then let the agent operate", "agent_operate")
+                with gr.Column(elem_id="console"):
+                    gr.HTML('<div class="pane-title"><span>Console · agents</span><span>memory stays in this session</span></div>')
+                    slot("Questions and answers", "local model when installed, else cloud agents", "ask · console_html")
+        open_settings.click(lambda: gr.Sidebar(open=True), None, [settings_bar])
     app.actions = actions
     return app
 
