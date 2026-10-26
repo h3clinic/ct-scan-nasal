@@ -1,29 +1,101 @@
 # Nasal0
 
-A prototype for evaluating nasal airway obstruction. It builds airway geometries (parametric tubes, and real patient airways from CT), estimates airflow resistance by region, and wraps the tools in agents that explain the results and plan virtual surgery, on any OpenAI-compatible model API (OpenAI by default). Physics and decision rules are plain code, never a language model, so every number traces back to a formula or a simulation.
+**Patient-specific nasal airflow analysis from a CT scan, with traceable physics and virtual surgery.**
 
-## At a glance
+Nasal0 turns a patient's 3D CT volume into a segmented nasal airway, measures where airflow resistance occurs, and lets a clinician compare modeled surgical changes before choosing a plan. OpenFOAM computes the airflow. Language models may explain results and operate the tools, but they never invent or change the clinical measurements.
 
-Built for the NVIDIA x Red Hat Small Models Hack; see [SUBMISSION.md](SUBMISSION.md) for the pitch and track mapping, and [PRESENTATION.md](PRESENTATION.md) for the demo script.
+The project is open source and can run on a local workstation. CT volumes stay on that machine. A fully local Qwen explainer is available, and cloud agents are optional.
 
-- **Real anatomy:** 130 NasalSeg CT airways, 126 simulated in OpenFOAM on NVIDIA Brev (median nasal resistance 0.146 Pa·s/cm³ at 150 Pa).
-- **Fast surrogate:** under 0.3 ms per prediction, 16.2% mean side error (cross-validated, duplicate scans kept in one fold) against 30.1% for "average patient".
-- **Surgeon agent:** operates on a patient's CT airway with parametric virtual surgery (side, region, depth), checks each candidate in OpenFOAM, undoes what does not help, and shows every change live in the studio. A spectator mode replays every step, and OpenFOAM's wall pressure, air speed and convergence are drawn while the solver runs.
-- **Four agents** on OpenAI's API by default (`gpt-4.1-mini`, `store=False`), or Anthropic, Google Gemini, OpenRouter or any OpenAI-compatible endpoint. Code validates every tool call, and every number the Explainer writes is checked against the tool results. For real patients, every number the agents report comes from OpenFOAM. Their reliability on OpenAI has not been measured yet (`nasal-agents --eval`).
-- **Virtual surgery, verified in OpenFOAM:** on 10 obstructed real airways, Workflow++ came within 90% of the best plan's drop for 8 of 10 and the standard rule for 1 of 10. Workflow++ picked turbinate reduction with valve repair for all 10, so the same fixed plan for everyone does exactly as well; the best plan differs between patients (all three procedures for 5 of 10), but by less than the surrogate can tell apart.
-- **Data:** every simulated result (125 patients, 96 surgery runs, 106 idealized airways, surrogates) is in [dataset/](dataset/README.md), CC BY 4.0.
-- **App:** `nasal-studio`: CT to airway, OpenFOAM, virtual surgery and agents in one window (start it with `start-studio.bat` or `./start-studio.sh`).
+> **Current status**
+> Nasal0 is an actively developed prototype. The CT import, segmentation, OpenFOAM pipeline, virtual operations, agents, command-line tools, and stored validation results are implemented. The studio's browser layout is being redesigned, so the current branch exposes its working actions through `nasal.studio.make_actions()` while the visual interface is reconnected. The modeled procedures and decision thresholds have not been reviewed by an ENT.
+
+## What a clinician can do
+
+1. **Import the patient's scan.** Open a DICOM series, NIfTI volume, or NRRD file. A single 2D image is not enough because the workflow needs the full 3D airway.
+2. **Create the airway model.** Nasal0 crops a full-head scan to the nasal region and automatically labels the right cavity, left cavity, and nasopharynx.
+3. **Run airflow analysis.** OpenFOAM applies a 150 Pa pressure difference and reports total, side-specific, and regional resistance. The airway can be colored by where resistance is concentrated.
+4. **Explore possible changes.** Apply modeled turbinate reduction, valve repair, septoplasty, or a targeted widening. Each edit shows how much modeled airway volume was added or removed.
+5. **Verify each candidate.** Run OpenFOAM on the changed airway and compare the result with the original. The interface can show solver convergence, wall pressure, air speed, and resistance while the run is in progress.
+6. **Review the complete trail.** Spectator mode records each operation, undo, simulation, result, and agent tool call so the path to the final comparison can be replayed.
+
+The clinician remains the decision maker. Nasal0 provides a reproducible airflow comparison and does not replace symptoms, examination, endoscopy, rhinomanometry, or clinical judgment.
+
+## Why the results are traceable
+
+```text
+Patient CT
+   ↓ local import and segmentation
+3D airway label
+   ↓ OpenFOAM
+Baseline airflow and regional resistance
+   ↓ modeled procedure
+Edited airway
+   ↓ OpenFOAM verification
+Before and after comparison
+   ↓ optional local or cloud explanation
+Clinician review with a replayable audit trail
+```
+
+- Physics, geometry changes, thresholds, and number checks are ordinary Python code.
+- Every resistance value shown for a real airway comes from a stored or newly run OpenFOAM case.
+- The surgeon agent can select operations, but code constrains their side, region, and depth and requires an OpenFOAM check before it can finish.
+- Explanations are rejected or replaced when they include a number that is not present in the computed facts.
+- Inputs, edits, simulations, and results can be inspected without trusting a model's prose.
+
+## Evidence in this repository
+
+| Component | Result | Important context |
+| --- | --- | --- |
+| Patient airflow dataset | 126 of 130 NasalSeg airways simulated | Median resistance was 0.146 Pa·s/cm³ at 150 Pa |
+| Patient surrogate | 16.2% mean side error | Cross-validated with duplicate scans kept in the same fold; under 0.3 ms per prediction |
+| Automatic segmentation | 0.85 airway Dice at the default −300 HU threshold | Grouped cross-validation on 123 usable NasalSeg scans; resistance agreement remains substantially weaker than label overlap |
+| Virtual surgery study | Workflow++ reached at least 90% of the best modeled drop for 8 of 10 airways | It selected the same turbinate reduction and valve repair plan for all 10, so it did not yet demonstrate patient-specific plan selection |
+| Local explainer | 56 of 67 held-out answers passed the full fact check | Qwen2.5-1.5B, trained on 555 checked answers; median 2.2 seconds per answer on the test GPU |
+
+The full inputs and outputs are published in [`dataset/`](dataset/README.md) under CC BY 4.0. The detailed methods, failure cases, and limitations appear below rather than being hidden behind headline metrics.
+
+## Privacy and deployment
+
+The core workflow can stay inside a clinic-controlled machine.
+
+- CT import, segmentation, airway editing, OpenFOAM simulation, and the local Qwen explainer run locally.
+- A patient CT is never sent to a language-model provider.
+- When a cloud agent is enabled, it receives only the patient identifier, the clinician's question, and numbers already computed by code.
+- OpenAI requests use `store=False`. Other providers follow their own retention policies.
+- An API key may remain in memory for the browser session or be saved in the operating system's credential manager. It is not written to a project file.
+- Anthropic, Google Gemini, OpenRouter, and custom OpenAI-compatible endpoints are supported in addition to OpenAI.
+
+These controls support a privacy-conscious deployment, but HIPAA compliance also depends on the clinic's infrastructure, access controls, contracts, policies, and operating procedures.
+
+## Quick start
+
+Clone the repository, then launch the setup script from its root.
+
+**Windows**
+
+```bat
+start-studio.bat
+```
+
+**macOS or Linux**
 
 ```bash
-pip install -e ".[dev,sim,surrogate,agents,patients,studio]"
+./start-studio.sh
+```
+
+The launcher creates a virtual environment at `~/.venvs/ct-scan-nasal`, installs the studio, runs the setup checks, and opens `http://127.0.0.1:7861`. Use `--update` to reinstall after pulling changes or `--no-browser` to start without opening a browser.
+
+For development and tests
+
+```bash
+python -m pip install -e ".[dev,sim,surrogate,agents,patients,segment,studio]"
+python -m nasal.setup_check
 pytest
 ```
 
-### Quick start (studio)
+### Requirements and graceful fallbacks
 
-Windows: double-click `start-studio.bat`. macOS or Linux: `./start-studio.sh`. The first run creates a Python environment in `~/.venvs/ct-scan-nasal` and installs the studio. Every run prints the setup check and opens the studio in the browser, kept awake while it runs. The window is an empty page while its layout is being redesigned (see Studio). Set `NASALSEG_ROOT` to a NasalSeg folder (with `images/` and `labels/`) to list its patients too. `--update` reinstalls after pulling new code, and `--no-browser` starts without opening a browser.
-
-What the studio uses, and what still works without it (checked at start, and in Settings → Setup with **Recheck**):
+The setup checker explains what is installed, what is missing, and which parts still work.
 
 | Needed for | Requirement | Without it |
 | --- | --- | --- |
@@ -35,7 +107,18 @@ What the studio uses, and what still works without it (checked at start, and in 
 
 `python -m nasal.setup_check` (or `nasal-setup`) prints the same checks. Every check is quick and changes nothing.
 
-## Design
+## Repository guide
+
+| Path | Contents |
+| --- | --- |
+| [`src/nasal/`](src/nasal/) | CT import, segmentation, anatomy, airflow, virtual surgery, agents, studio, and evaluation code |
+| [`tests/`](tests/) | Unit and integration tests for the complete pipeline |
+| [`dataset/`](dataset/README.md) | Published OpenFOAM results, virtual surgery results, and trained model artifacts |
+| [`docs/figures/`](docs/figures/) | Segmentation evaluation figures |
+| [`SUBMISSION.md`](SUBMISSION.md) | Hackathon submission and track mapping |
+| [`PRESENTATION.md`](PRESENTATION.md) | Demo script |
+
+## Technical design
 
 ### Agents
 
@@ -48,6 +131,10 @@ All four agents run on one model through an OpenAI-compatible API: OpenAI's `gpt
 | Critic | OpenAI (`gpt-4.1-mini`) | `review_results`, `check_parameters`, `report_flags` | Runs the code checks and picks which flags to show; it can cite only flag ids the checks produced |
 | Explainer | OpenAI (`gpt-4.1-mini`) | none | Writes the plain-language summary; code rejects any number not in the tool results and retries once, then falls back to a template written by code |
 
+The surgeon is a separate agent because it modifies an airway and runs its own verification loop.
+
+| Agent | Model | Tools it may call | Job |
+| --- | --- | --- | --- |
 | Surgeon (separate, `nasal.surgeon`) | same provider | `airway_status`, `technique_info`, `operate`, `undo`, `simulate`, `finish_surgery` | Operates on a real CT airway with the parametric techniques, runs OpenFOAM on each candidate (at most 6 runs) and keeps the best verified airway; it may not finish before checking at least one operation in OpenFOAM |
 
 The agent count stays at four: more agents mostly add latency and failure points. Surgery questions go through the decision rules in `nasal.decision`: `recommend_surgery` runs the final-stage recommender on a synthetic case, and `patient_surgery_options` applies the same Workflow++ rule, technique reasons and dominant-region check to a real CT airway, using OpenFOAM's result for each plan (`nasal.patient_flow`). The rule thresholds are placeholders until an ENT reviews them.
