@@ -1,7 +1,7 @@
 [project]
 name = "ct-scan-nasal"
 version = "0.1.0"
-description = "Research prototype: parametric nasal airway cases, airflow resistance, and a small-model agent loop."
+description = "Patient-specific nasal airway modeling, OpenFOAM analysis, and verified virtual-surgery workflows."
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.26",

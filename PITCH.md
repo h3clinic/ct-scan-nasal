@@ -1,7 +1,5 @@
 # Nasal0: 5-minute script (two speakers)
 
-**Live demo:** https://7a5747cfe97ac7e65b.gradio.live
-
 **YOU** drives the demo. **PANKAJ** opens, covers results and closes. Times are when each line starts.
 
 **Before going on:** open the demo on P022, run the default question once and the surgery question once (so both are warm), then reload the page.
@@ -10,7 +8,7 @@
 
 **0:00 · PANKAJ** *(title: Nasal0)*
 
-> "A blocked nose is diagnosed by eye. A surgeon looks at a CT scan and operates on what looks wrong. But what looks wrong isn't always where the air gets stuck. Nasal0 shows where it gets stuck."
+> "An examination and CT scan show nasal anatomy, but they do not directly quantify where airflow loses pressure. Nasal0 shows where the modeled airflow gets stuck."
 
 **0:20 · YOU** *(demo open on P022; rotate the airway slowly)*
 
@@ -38,11 +36,11 @@
 
 **3:00 · PANKAJ** *(gallery: Virtual surgery)*
 
-> "Then we tested decisions. On the 10 most obstructed airways, we simulated every surgery plan: 80 OpenFOAM runs. The plan chosen from the resistance map matched the best plan for 10 out of 10 patients. The look-at-the-scan rule: 1 out of 10."
+> "Then we tested decisions. On the 10 most obstructed airways, we simulated every surgery plan: 80 OpenFOAM runs. The plan chosen from the resistance map came within 90% of the best modeled drop for 8 out of 10 airways. The standard visual rule did so for 1 out of 10."
 
-**3:30 · YOU** *(back to the demo; type "What surgery option should I do on this patient"; click "Run agents")*
+**3:30 · YOU** *(back to the demo; type "Compare the modeled options for this patient"; click "Run agents")*
 
-> "And the agents use that same decision rule. Let's ask: what surgery should this patient have? The Planner runs virtual surgery on this patient's own CT airway: turbinate reduction, valve repair, septoplasty, and every combination, seven plans. Then it picks the smallest plan that gets within 90% of the best result. That's Pankaj's rule."
+> "And the agents use that same decision rule. Let's compare the modeled options. The Planner runs virtual surgery on this patient's own CT airway: turbinate reduction, valve repair, septoplasty, and every combination, seven plans. Then it identifies the smallest plan that gets within 90% of the best modeled result."
 
 **3:55 · YOU** *(answer appears)*
 

@@ -187,7 +187,7 @@ class Tools:
         return out
 
     def recommend_surgery(self, args: dict) -> dict:
-        """Pankaj's final-stage recommender (nasal.decision.recommend) on the current synthetic case."""
+        """Run the final-stage recommender on the current synthetic case."""
         from .decision.recommend import recommend
 
         if self.case is None:
@@ -336,12 +336,12 @@ SCHEMAS = {
     "patient_surgery_options": _tool(
         "patient_surgery_options",
         "Virtual surgery on the patient's CT airway: turbinate reduction, valve repair, septoplasty and their "
-        "combinations, each run in OpenFOAM; returns the recommended plan, the best plan and the look-at-the-scan plan.",
+        "combinations, each run in OpenFOAM; returns the rule-selected candidate, the best modeled result and the standard-rule candidate.",
         {"type": "object", "properties": {"patient_id": {"type": "string"}}, "required": ["patient_id"]}),
     "recommend_surgery": _tool(
         "recommend_surgery",
-        "Final-stage surgery suggestion for the current case: virtual turbinate reduction, valve repair and "
-        "septoplasty in every combination, the suggested plan with reasons, and the look-at-the-scan plan.",
+        "Modeled option comparison for the current case: virtual turbinate reduction, valve repair and "
+        "septoplasty in every combination, the rule-selected candidate with reasons, and the standard-rule candidate.",
         {"type": "object", "properties": {}}),
     "report_flags": _tool("report_flags", "Report which flags from review_results matter for the reader.", {
         "type": "object",
@@ -373,15 +373,16 @@ PROMPTS = {
         "You are the Planner. A real patient has been selected. Always call patient_resistance for that patient. "
         "If the user asks what a specific procedure would do (turbinate reduction, valve repair, septoplasty, or "
         "widening the nasal valve, which is valve repair), call patient_what_if with those procedures. If the user "
-        "asks which surgery or treatment to do, call patient_surgery_options once. Never state numbers yourself. "
+        "asks which surgery or treatment to do, or asks to compare the options, call patient_surgery_options once. "
+        "Frame the result as a modeled comparison, not clinical advice. Never state numbers yourself. "
         "When done, call finish."
     ),
     "planner": (
         "You are the Planner. A case has been set. Decide which tools answer the user's request. Always call "
         "predict_resistance and formula_resistance for the case. If the user asks about a change (for example "
         "widening the valve or reducing the turbinate), call what_if with only the parameters that change. "
-        "If the user asks which surgery or treatment to do, call recommend_surgery once. "
-        "Never state numbers yourself. When done, call finish."
+        "If the user asks which surgery or treatment to do, or asks to compare the options, call recommend_surgery once. "
+        "Frame the result as a modeled comparison, not clinical advice. Never state numbers yourself. When done, call finish."
     ),
     "critic": (
         "You are the Critic. Call review_results, then call report_flags with the ids of the flags a reader must "
@@ -553,7 +554,7 @@ def plan_name(plan) -> str:
 
 
 def _technique_notes(record: dict, plan: str) -> dict:
-    """Pankaj's recommender notes for a patient: why each procedure, where the resistance sits,
+    """Recommender notes for a patient: why each procedure, where the resistance sits,
     and what the model leaves out."""
     from .decision.recommend import REASONS
     from .decision.rules import region_fractions
@@ -625,21 +626,23 @@ def model_info(model: str, provider: str = "OpenAI") -> dict:
     return {"name": model, "provider": f"{provider}{note}", "total_params": "not published by the provider"}
 
 
-def explain_error(error: str) -> str:
-    """An OpenAI error in words a user can act on; the raw error kind stays at the end for reference."""
+def explain_error(error: str, provider: str = "OpenAI") -> str:
+    """A provider error in words a user can act on; keep the raw error kind for reference."""
+    billing = ("Add credits under Billing at platform.openai.com, then send again."
+               if provider == "OpenAI" else f"Check the {provider} account's billing, then send again.")
     hints = [
         (("insufficient_quota", "credit_balance_exhausted"),
-         "OpenAI says this account has no credits left. Add credits under Billing at platform.openai.com, then send again."),
+         f"{provider} says this account has no credits left. {billing}"),
         (("invalid_api_key", "AuthenticationError", "Incorrect API key"),
-         "OpenAI did not accept the API key. Check it in Settings."),
-        (("model_not_found", "does not exist"), "OpenAI does not offer that model to this key. Change the model in Settings."),
-        (("RateLimitError",), "OpenAI is limiting requests right now. Wait a moment and send again."),
-        (("APIConnectionError", "Connection error"), "Could not reach OpenAI. Check the internet connection."),
+         f"{provider} did not accept the API key. Check it in Settings."),
+        (("model_not_found", "does not exist"), f"{provider} does not offer that model to this key. Change the model in Settings."),
+        (("RateLimitError",), f"{provider} is limiting requests right now. Wait a moment and send again."),
+        (("APIConnectionError", "Connection error"), f"Could not reach {provider}. Check the internet connection."),
     ]
     for needles, text in hints:
         if any(n in error for n in needles):
             return f"{text} ({error.split(':')[0]})"
-    return f"{error} (OpenAI API)"
+    return f"{error} ({provider} API)"
 
 
 def with_history(request: str, history: list[dict] | None, keep: int = 4) -> str:

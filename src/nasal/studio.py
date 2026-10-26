@@ -146,6 +146,8 @@ footer { display:none !important; }
   font-size:9px; font-weight:700; color:#b8b8b8; }
 #window-bar strong { color:#eee; letter-spacing:.02em; }
 #window-bar .sub { color:var(--faint); font-size:10px; margin-left:6px; }
+#window-bar .prototype { margin-left:auto; padding:3px 7px; border:1px solid #655b38; border-radius:999px;
+  color:#dfcf91; background:#272316; font-size:9px; font-weight:650; letter-spacing:.05em; text-transform:uppercase; }
 #shell { gap:0 !important; min-height:calc(100vh - 38px); flex-wrap:nowrap !important; align-items:stretch !important; }
 #sidebar { background:var(--chrome) !important; border-right:1px solid var(--line) !important; padding:0 8px 10px !important; align-self:stretch;
   gap:6px !important; flex:0 0 258px !important; max-width:258px; min-width:258px !important; }
@@ -163,11 +165,16 @@ label, .wrap label span, .prose, .info, td, th { font-size:11px !important; }
 #setup-banner { background:#2a2414 !important; border-bottom:1px solid #6b5a2a !important; padding:8px 12px !important;
   color:#e8d9a8 !important; font-size:11px; }
 #setup-banner p { margin:0; }
-.slot { margin:8px 10px; padding:10px 12px; border:1px dashed #3c3c3c; border-radius:3px; background:#1d1d1d; }
-.slot.tall { min-height:300px; display:flex; flex-direction:column; justify-content:center; text-align:center; }
-.slot-title { color:#cfcfcf; font-size:11px; font-weight:650; }
-.slot-hint { color:var(--muted); font-size:10px; margin-top:2px; }
-.slot-actions { color:var(--faint); font-size:9px; margin-top:6px; font-family:Consolas, monospace; }
+.sidebar-copy { color:var(--muted); font-size:10px; line-height:1.45; padding:0 6px 6px; }
+.privacy-card { margin:6px 0 2px; padding:8px 9px; border:1px solid #304741; border-radius:3px;
+  background:#1b2522; color:#a9c6bd; font-size:10px; line-height:1.45; }
+.workflow-step { margin:8px 0 1px; padding:7px 0 2px; border-top:1px solid var(--line-soft); color:#8e8e8e;
+  font-size:9px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
+.workflow-step:first-of-type { margin-top:0; border-top:none; }
+.research-note { margin:4px 0 2px; padding:7px 8px; border-left:2px solid #655b38; background:#272316;
+  color:#c9bb87; font-size:9px; line-height:1.4; }
+.empty-guidance { margin:10px 12px 0; padding:9px 10px; border:1px solid var(--line); border-radius:3px;
+  color:var(--muted); background:#1d1d1d; font-size:10px; line-height:1.45; }
 #monitor { min-height:560px; } #console { min-height:200px; } #controls, #sidebar { min-height:100%; }
 .pane-title { display:flex; align-items:center; justify-content:space-between; min-height:36px; padding:0 12px;
   background:var(--chrome); border-bottom:1px solid var(--line-soft); color:#d0d0d0; font-size:10px; font-weight:650; }
@@ -239,7 +246,7 @@ def console_html(entries: list[dict]) -> str:
 
 def make_actions(images_dir: Path | None = None, labels_dir: Path | None = None, sim_path: Path = agents.PATIENTS_PATH,
                  segment_model: Path | None = None, procs: int | None = None, iterations: int = FAST_ITERATIONS) -> dict:
-    """Everything the studio can do, as functions to wire into a layout (the layout itself is being redesigned).
+    """Everything the studio can do, as functions shared by the Gradio layout and other front ends.
 
     Returns a dict of handlers, plus `ids` (NasalSeg patients), `default` (the patient to open first) and `flow`
     (the OpenFOAM source shared with the agents). Gradio state the handlers expect: `st` (the open airway, a dict;
@@ -592,7 +599,7 @@ def make_actions(images_dir: Path | None = None, labels_dir: Path | None = None,
                 out["result"] = surgeon.run_surgeon(session, goal or "lower the resistance with the least surgery", client,
                                                     model["model"], model["provider"], listener=on_step)
             except Exception as err:  # shown in the console
-                out["error"] = agents.explain_error(f"{type(err).__name__}: {err}")
+                out["error"] = agents.explain_error(f"{type(err).__name__}: {err}", model["provider"])
                 timeline.add(actor, "error", f"surgeon agent failed: {out['error']}")
             else:
                 timeline.add(actor, "summary", out["result"]["summary"][:400], detail={"source": out["result"]["summary_source"]})
@@ -838,39 +845,193 @@ def make_actions(images_dir: Path | None = None, labels_dir: Path | None = None,
 
 def build_app(images_dir: Path | None = None, labels_dir: Path | None = None, sim_path: Path = agents.PATIENTS_PATH,
               segment_model: Path | None = None, procs: int | None = None, iterations: int = FAST_ITERATIONS):
-    """The studio window: the empty VOCO frame (title bar, sidebar column, main area, command column, console
-    strip and a settings drawer) while its layout is being redesigned. Every action is ready in `make_actions`
-    (also attached as `app.actions`) to wire into it."""
+    """Build the clinician-facing studio around the actions returned by :func:`make_actions`.
+
+    The patient source, airway assessment, plan comparison and audit timeline are kept in separate panes,
+    while the shared action layer remains usable without Gradio in tests and other front ends.
+    """
     import gradio as gr
 
     actions = make_actions(images_dir, labels_dir, sim_path, segment_model, procs, iterations)
+    ids, default = actions["ids"], actions["default"]
 
-    def slot(title: str, hint: str, actions_here: str, elem_class: str = "slot"):
-        """An empty, labeled place in the template: what goes here and which actions to wire."""
-        gr.HTML(f'<div class="{elem_class}"><div class="slot-title">{title}</div><div class="slot-hint">{hint}</div>'
-                f'<div class="slot-actions">{actions_here}</div></div>')
-
-    # the VOCO desktop template (github.com/h3clinic/VOCO), empty: title bar, patient sidebar, workspace with a
-    # top bar, the main pane and a command column, the console below, and a settings drawer on the right
     with gr.Blocks(title="Nasal0", fill_width=True) as app:
         gr.HTML('<div id="window-bar"><span class="mark">N0</span><strong>NASAL0</strong>'
-                '<span class="sub">CT → airway → OpenFOAM → virtual surgery → agents · layout being redesigned</span></div>')
-        with gr.Sidebar(label="Settings", open=False, position="right", width=330, elem_id="settings"):
-            gr.HTML('<div class="section-head"><span>Settings</span></div>')
-            slot("Language model", "API key, provider and model", "load_prefs · set_key · check_key · drop_key · pick_provider")
-            slot("Setup", "what this computer has, with fixes", "run_setup_checks")
-        # the empty frame: sidebar column, main area and command column, console strip below
+                '<span class="sub">Local nasal airway assessment and plan comparison</span>'
+                '<span class="prototype">Research prototype</span></div>')
+        state = gr.State({})
+        memory = gr.State([])
+        log = gr.State([])
+        prefs = gr.State({})
+
+        with gr.Sidebar(label="Settings", open=False, position="right", width=330,
+                        elem_id="settings") as settings_bar:
+            gr.HTML('<div class="section-head"><span>Model connection</span></div>')
+            key_status = gr.Markdown(elem_classes="note")
+            key_box = gr.Textbox(label="API key", type="password", placeholder="Paste a provider key", max_lines=1)
+            provider_pick = gr.Dropdown(list(providers.PROVIDERS), value=providers.DEFAULT, label="Provider")
+            model_box = gr.Textbox(value=agents.OPENAI_MODEL, label="Model", max_lines=1)
+            base_url_box = gr.Textbox(label="Custom API address", placeholder="https://.../v1", max_lines=1)
+            remember_key = gr.Checkbox(value=False, interactive=settings.can_remember(),
+                                       label="Remember in this computer's credential manager"
+                                       if settings.can_remember() else "Remember on this computer (requires keyring)")
+            with gr.Row():
+                use_key = gr.Button("Use key", variant="primary", min_width=60)
+                test_key = gr.Button("Test", elem_classes="signal", min_width=60)
+                forget_key = gr.Button("Forget", elem_classes="signal", min_width=60)
+            gr.Markdown("Cloud features are optional. The scan itself is not sent to the model provider. "
+                        "A remembered key is stored in the operating system credential manager, not in a project file.",
+                        elem_classes="note")
+            gr.HTML('<div class="section-head"><span>Local setup</span></div>')
+            setup_info = gr.Markdown("Checking this computer...", elem_classes="note")
+            recheck = gr.Button("Recheck setup", elem_classes="signal")
+
         with gr.Row(elem_id="shell"):
             with gr.Column(elem_id="sidebar", scale=0, min_width=258):
-                gr.HTML("")
+                gr.HTML('<div class="section-head"><span>Patient scan</span></div>')
+                gr.HTML('<div class="sidebar-copy">Start with a patient CT or open a public reference case.</div>')
+                upload = gr.File(label="Patient CT · DICOM, NIfTI or NRRD", file_count="multiple", height=112)
+                analyze = gr.Button("Open patient airway", variant="primary", elem_classes="signal")
+                gr.HTML('<div class="section-head"><span>Public reference cases</span>'
+                        f'<span class="count">{len(ids)}</span></div>')
+                pid = gr.Dropdown(ids, value=default, label="Reference case", container=True,
+                                  interactive=bool(ids))
+                open_reference = gr.Button("Open reference case", elem_classes="signal", interactive=bool(ids))
+                gr.HTML('<div class="privacy-card"><strong>Local scan workflow</strong><br>'
+                        'Segmentation, geometry edits and airflow calculations run on this computer.</div>')
+                with gr.Accordion("Model assumptions", open=False):
+                    gr.Markdown("Rigid walls, one steady breath at 150 Pa and voxel-based geometry. Results are "
+                                "for research comparison and must be reviewed alongside the clinical record.",
+                                elem_classes="note")
+
             with gr.Column(elem_id="workspace", scale=1):
+                with gr.Row(elem_id="topbar"):
+                    status = gr.Markdown(actions["ready_text"](), elem_id="status")
+                    open_settings = gr.Button("Settings", elem_classes="signal", scale=0, min_width=96)
+                setup_banner = gr.Markdown(visible=False, elem_id="setup-banner")
                 with gr.Row(elem_id="session"):
                     with gr.Column(elem_id="monitor", scale=1):
-                        gr.HTML("")
+                        with gr.Tabs():
+                            with gr.Tab("Assessment"):
+                                gr.HTML('<div class="pane-title"><span>Airway assessment</span>'
+                                        '<span>interactive 3D anatomy and OpenFOAM airflow</span></div>')
+                                gr.HTML('<div class="empty-guidance">Open a patient scan to inspect the segmented airway. '
+                                        'Run airflow when no stored OpenFOAM result is available.</div>')
+                                plot = gr.Plot(show_label=False)
+                                info = gr.Markdown(elem_classes="info")
+                                live_chart = gr.Plot(label="Solver progress", show_label=False)
+                            with gr.Tab("Results"):
+                                gr.HTML('<div class="pane-title"><span>Measured results</span>'
+                                        '<span>resistance in Pa·s/cm³</span></div>')
+                                with gr.Row():
+                                    table = gr.Dataframe(label="Regional resistance", interactive=False)
+                                    ranking = gr.Dataframe(label="Plan comparison", interactive=False)
+                            with gr.Tab("Timeline"):
+                                gr.HTML('<div class="pane-title"><span>Case timeline</span>'
+                                        '<span>review each airway change and simulation result</span></div>')
+                                spec_plot = gr.Plot(show_label=False)
+                                spec_detail = gr.Markdown(elem_classes="info")
+                                with gr.Row():
+                                    spec_prev = gr.Button("◀ Previous", elem_classes="signal", min_width=76)
+                                    spec_play = gr.Button("▶ Play", elem_classes="signal", min_width=70)
+                                    spec_next = gr.Button("Next ▶", elem_classes="signal", min_width=76)
+                                    spec_follow = gr.Checkbox(value=True, label="Follow current case")
+                                spec_step = gr.Slider(0, 1, value=0, step=1, label="Timeline step")
+                                spec_series = gr.Plot(show_label=False)
+                                spec_table = gr.Dataframe(label="Event log", interactive=False, max_height=260)
+                                with gr.Row():
+                                    spec_saved = gr.Dropdown([], label="Saved sessions", scale=3)
+                                    spec_load = gr.Button("Open saved", elem_classes="signal", scale=1)
+                                    spec_live = gr.Button("Current case", elem_classes="signal", scale=1)
+                                    spec_save = gr.Button("Save timeline", elem_classes="signal", scale=1)
+                                spec_note = gr.Markdown(elem_classes="note")
+                                spec_timer = gr.Timer(1.5)
+
                     with gr.Column(elem_id="controls", scale=0, min_width=244):
-                        gr.HTML("")
+                        gr.HTML('<div class="section-head"><span>Clinical workflow</span></div>')
+                        gr.HTML('<div class="workflow-step">1 &nbsp; Establish baseline</div>')
+                        air_btn = gr.Button("Run baseline airflow", variant="primary", elem_classes="signal")
+                        gr.HTML('<div class="workflow-step">2 &nbsp; Define a plan</div>')
+                        procedures = gr.CheckboxGroup(list(PROCEDURE_NAMES),
+                                                      value=["Turbinate reduction", "Valve repair"],
+                                                      label="Virtual procedures")
+                        sim_btn = gr.Button("Simulate selected plan", elem_classes="signal")
+                        all_btn = gr.Button("Compare all plans", elem_classes="signal")
+                        reset_btn = gr.Button("Return to baseline", elem_classes="signal")
+                        gr.HTML('<div class="workflow-step">3 &nbsp; Explore alternatives</div>')
+                        goal = gr.Textbox(value="Lower resistance with the least airway change",
+                                          label="Exploration goal", lines=2)
+                        surgeon_btn = gr.Button("Run automated exploration", elem_classes="signal")
+                        gr.HTML('<div class="research-note">Automated exploration is experimental. Review every '
+                                'geometry change and OpenFOAM result before drawing conclusions.</div>')
+
                 with gr.Column(elem_id="console"):
-                    gr.HTML("")
+                    gr.HTML('<div class="pane-title"><span>Case assistant</span>'
+                            '<span>available for public reference cases</span></div>')
+                    messages = gr.HTML(console_html([]))
+                    with gr.Row(elem_id="composer"):
+                        question = gr.Textbox(placeholder="Ask about the airflow result or compare plans",
+                                              show_label=False, scale=5, container=False)
+                        model_label = gr.Markdown(elem_classes="note", elem_id="model-label")
+                        send = gr.Button("Send", variant="primary", scale=0, min_width=70)
+                        clear = gr.Button("Clear", scale=0, min_width=70, elem_classes="signal")
+                    memory_info = gr.Markdown("For cloud models, only the reference case id, your question and "
+                                              "computed measurements are sent. The CT is not sent.", elem_classes="note")
+
+        view_out = [plot, table, ranking, info]
+        patient_out = [state, *view_out, status]
+        analyze.click(actions["reconstruct"], [pid, upload], patient_out)
+        open_reference.click(lambda selected: actions["reconstruct"](selected, None), [pid], patient_out)
+        app.load(actions["reconstruct"], [pid, upload], patient_out)
+        air_btn.click(actions["simulate_original"], [state], [*view_out, status, live_chart])
+        reset_btn.click(actions["show_original"], [state], view_out)
+        sim_btn.click(actions["plan_once"], [state, procedures], [state, *view_out, status, live_chart])
+        all_btn.click(actions["plan_all"], [state, procedures], [state, *view_out, status, live_chart])
+        for trigger in (send.click, question.submit):
+            trigger(actions["ask"], [pid, question, memory, log, prefs],
+                    [messages, log, memory, question, memory_info])
+        clear.click(lambda: (console_html([]), [], [], "Session memory cleared."), None,
+                    [messages, log, memory, memory_info])
+        surgeon_btn.click(actions["agent_operate"], [state, goal, prefs, log],
+                          [*view_out, status, messages, log, live_chart])
+
+        spec = gr.State({"step": 0, "playing": False, "loaded": None, "drawn": None})
+        spec_out = [spec, spec_plot, spec_detail, spec_step, spec_series, spec_table, spec_play]
+        spec_timer.tick(actions["tick"], [state, spec, spec_follow], spec_out, show_progress="hidden")
+        spec_step.release(lambda st, sp, value: (*actions["spectate"](st, sp, step=value), False),
+                          [state, spec, spec_step], [*spec_out, spec_follow])
+        spec_prev.click(lambda st, sp: (*actions["spectate"](
+                            st, {**sp, "playing": False}, advance=-1), False),
+                        [state, spec], [*spec_out, spec_follow])
+        spec_next.click(lambda st, sp: (*actions["spectate"](
+                            st, {**sp, "playing": False}, advance=1), False),
+                        [state, spec], [*spec_out, spec_follow])
+        spec_play.click(actions["toggle_play"], [state, spec], spec_out)
+        spec_save.click(actions["save_timeline"], [state, spec], [spec_note, spec_saved])
+        spec_load.click(actions["load_timeline"], [spec_saved, state, spec],
+                        [*spec_out, spec_follow, spec_note])
+        spec_live.click(actions["watch_current"], [state, spec], [*spec_out, spec_follow, spec_note])
+        app.load(lambda: gr.update(choices=[p.name for p in spectator.saved_timelines()]), None, [spec_saved])
+        spec_saved.focus(lambda: gr.update(choices=[p.name for p in spectator.saved_timelines()]), None, [spec_saved])
+
+        app.load(actions["load_prefs"], None,
+                 [prefs, key_status, model_label, provider_pick, model_box, base_url_box])
+        open_settings.click(lambda: gr.Sidebar(open=True), None, [settings_bar])
+        key_inputs = [key_box, remember_key, provider_pick, model_box, base_url_box, prefs]
+        key_outputs = [prefs, key_status, key_box, model_label, provider_pick, model_box]
+        use_key.click(actions["set_key"], key_inputs, key_outputs)
+        key_box.submit(actions["set_key"], key_inputs, key_outputs)
+        test_key.click(actions["check_key"], [prefs], [key_status])
+        forget_key.click(actions["drop_key"], [prefs], [prefs, key_status, model_label])
+        provider_pick.input(actions["pick_provider"], [provider_pick, prefs],
+                            [prefs, model_box, model_label, key_status])
+        for component, name in ((model_box, "model"), (base_url_box, "base_url")):
+            component.change(actions["set_pref"](name), [component, prefs], [prefs])
+        model_box.change(lambda current: actions["model_text"](current), [prefs], [model_label])
+
+        app.load(actions["run_setup_checks"], None, [setup_info, setup_banner])
+        recheck.click(actions["run_setup_checks"], None, [setup_info, setup_banner])
+
     app.actions = actions
     return app
 

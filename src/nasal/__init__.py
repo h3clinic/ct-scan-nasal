@@ -1,1 +1,1 @@
-"""Nasal airway airflow prototype: real and parametric airways, OpenFOAM, surrogates and small-model agents."""
+"""Nasal airway modeling with CT segmentation, OpenFOAM analysis and virtual surgery."""

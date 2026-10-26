@@ -2,8 +2,6 @@
 
 Everything for a live presentation: setup, the word-for-word script with clicks, backups, likely questions and the numbers to remember.
 
-**Note:** the studio's layout is being redesigned, and its window is currently an empty page. This script follows the previous layout (commit 7a5a8a7).
-
 ## 30 minutes before
 
 1. **Network:** connect to your phone hotspot if the venue's Wi-Fi blocks APIs. Check with `curl -s https://api.openai.com/v1/models` (any reply means it isn't blocked).
@@ -16,7 +14,7 @@ Everything for a live presentation: setup, the word-for-word script with clicks,
 
 **[Slide or demo title: Nasal0]**
 
-> "A blocked nose is diagnosed by eye. A surgeon looks at a CT scan, sees a bent septum or a big turbinate, and operates on what looks wrong. But what looks wrong isn't always where the air gets stuck.
+> "An examination and CT scan show nasal anatomy, but they do not directly quantify where airflow loses pressure. What looks narrow isn't always where the modeled pressure loss is highest.
 >
 > Nasal0 shows where it gets stuck."
 
@@ -36,7 +34,7 @@ Everything for a live presentation: setup, the word-for-word script with clicks,
 
 > "Every combination of turbinate reduction, valve repair and septoplasty, each checked in OpenFOAM, ranked by how much it lowers resistance. These are stored runs; a new patient's run streams live while the solver works."
 
-**[Type in the console: "Which surgery should this patient have and why?"] (1:40)**
+**[Type in the console: "Compare the modeled procedure options for this patient."] (1:40)**
 
 > "Now ask in plain language. A small model running on this laptop answers, with no cloud and no API key.
 >
@@ -88,7 +86,7 @@ Four roles with separate tools and checks, on one model, keep it simple and chea
 Code computes every number. The Explainer's text is checked number by number against the tool results. If a number doesn't match, it gets one retry, and then code writes the answer instead. The Critic can only cite flags that the code checks produced.
 
 **Did you fine-tune anything?**
-No. The agents use an OpenAI model as offered, with its standard tool calling.
+The hosted agents use the selected provider's model as offered, with tool calling. The optional local explainer is Qwen2.5-1.5B-Instruct fine-tuned with LoRA on 555 answers that passed the project's fact checks.
 
 **Septoplasty made things worse?**
 It did in our first version, because that voxel septoplasty removed more airway than it added. Now it straightens only the parts of the septum that bulge and keeps its thickness, and on its own it is neutral (0.2% lower on average); added to turbinate reduction and valve repair it helped 5 of the 10 patients, by up to 1.6 points.

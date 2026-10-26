@@ -108,7 +108,7 @@ def ask_agents(pid, question, patients, flow, history: list[dict] | None = None,
             steps.append(line)
             yield "\n".join(steps), ""
     if "error" in result:
-        yield "\n".join(steps), f"**Agents failed:** {agents.explain_error(result['error'])}"
+        yield "\n".join(steps), f"**Agents failed:** {agents.explain_error(result['error'], options.get('provider', 'OpenAI'))}"
         return
     out = result["out"]
     if history is not None:

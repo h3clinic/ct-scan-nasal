@@ -69,3 +69,9 @@ def test_openai_errors_are_explained_in_plain_words():
     assert "no credits left" in agents.explain_error(quota) and agents.explain_error(quota).endswith("(RateLimitError)")
     assert "did not accept the API key" in agents.explain_error("AuthenticationError: Error code: 401 invalid_api_key")
     assert "RuntimeError: boom" in agents.explain_error("RuntimeError: boom")
+
+
+def test_provider_errors_name_the_selected_provider():
+    error = agents.explain_error("AuthenticationError: invalid_api_key", "Anthropic (Claude)")
+    assert "Anthropic (Claude) did not accept" in error
+    assert "OpenAI" not in error

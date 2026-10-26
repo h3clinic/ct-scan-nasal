@@ -84,9 +84,9 @@ QUESTIONS = {
         "Walk me through every number here and what it says about the airway.",
     ],
     "surgery": [
-        "Which procedure should this patient have, and why? Compare it with the alternatives.",
+        "Compare the modeled procedure options for this patient and explain the rule-selected candidate.",
         "Explain each surgical option, its predicted result in the model, and the main consequences and risks.",
-        "What would you tell the patient about the recommended surgery and the alternatives?",
+        "Compare the modeled candidate with the alternatives and state the model's limits.",
     ],
     "plan": [
         "Explain this procedure: how it is generally performed, and what it does to the airway.",
