@@ -1,0 +1,27 @@
+# Ollama package for the distilled explainer: the merged Qwen2.5-1.5B student, quantized to 4-bit on import.
+#   docker cp data/distill/student/merged nasal-ollama:/models/nasal-explainer
+#   docker cp scripts/nasal-explainer.Modelfile nasal-ollama:/models/Modelfile
+#   docker exec nasal-ollama ollama create nasal-explainer -q q4_K_M -f /models/Modelfile
+FROM /models/nasal-explainer
+
+TEMPLATE """{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 -}}
+{{- if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{ .Content }}{{ if not $last }}<|im_end|>
+{{ end }}
+{{- end }}
+{{- if and (ne .Role "assistant") $last }}<|im_start|>assistant
+{{ end }}
+{{- end }}"""
+
+SYSTEM """You explain nasal airflow results to a clinician. Use only numbers from the Results JSON, copied exactly. Resistance is in Pa*s/cm^3; higher means harder to breathe through."""
+
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|im_start|>"
+PARAMETER temperature 0.2
+PARAMETER num_ctx 4096

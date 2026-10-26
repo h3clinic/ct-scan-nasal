@@ -19,6 +19,7 @@ Evaluator = Callable[[CaseParams], dict]
 PLACEHOLDER_THRESHOLDS = {
     "visible_deviation": 0.3,  # |septum_deviation| above this looks deviated
     "near_best_gain": 0.9,  # ++ accepts a plan reaching this share of the best reduction
+    "min_benefit_pct": 5.0,  # patient rules and the surgeon agent recommend no surgery below this % drop
 }
 
 

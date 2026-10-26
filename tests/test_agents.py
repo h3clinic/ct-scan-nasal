@@ -106,37 +106,89 @@ def test_tool_schemas_follow_param_specs():
     assert props["valve_angle_deg"]["minimum"] == 8.0 and props["septum_deviation"]["maximum"] == 1.0
 
 
-def test_patient_mode_selects_patient_and_runs_patient_tools():
-    pytest.importorskip("torch")
-    import sys
-    from pathlib import Path
+def openfoam_record(patient, total, plan=None, left_area=40.0, right_area=40.0):
+    """A stored OpenFOAM row: regions add up to each side, sides in parallel give the total."""
+    side = 2 * total
+    rec = {"patient": patient, "total_resistance": total, "total_flow_cm3_s": 150 / total,
+           "left_mean_area_mm2": left_area, "right_mean_area_mm2": right_area}
+    for s in ("left", "right"):
+        rec[f"{s}_resistance"] = side
+        for r, share in zip(("vestibule", "valve", "turbinate", "choana"), (0.1, 0.2, 0.5, 0.2)):
+            rec[f"{s}_{r}_resistance"] = side * share
+    if plan is not None:
+        rec["plan"] = plan
+    return rec
 
-    sys.path.insert(0, str(Path(__file__).parent))
-    from test_surrogate import _fake_patients
 
-    from nasal.surrogate import PatientSurrogate
+SURGERY_TOTALS = {"none": 0.30, "turbinate_reduction": 0.268, "septoplasty": 0.33, "valve_repair": 0.29,
+                  "turbinate_reduction+septoplasty": 0.29, "turbinate_reduction+valve_repair": 0.265,
+                  "septoplasty+valve_repair": 0.32, "turbinate_reduction+septoplasty+valve_repair": 0.28}
 
-    table = _fake_patients(30)
-    model = PatientSurrogate.fit(table)
-    before = round(model.predict(table.iloc[3].to_dict())["total_resistance"], 4)
+
+def patient_tables():
+    import pandas as pd
+
+    patients = pd.DataFrame([openfoam_record(f"P00{i}", SURGERY_TOTALS["none"] if i == 3 else 0.2 + 0.01 * i)
+                             for i in range(1, 5)])
+    surgery = pd.DataFrame([openfoam_record("P003", t, plan) for plan, t in SURGERY_TOTALS.items()])
+    return patients, surgery
+
+
+def test_patient_mode_reads_openfoam_not_the_surrogate():
+    patients, surgery = patient_tables()
     client = ScriptedClient([
         reply(calls=[call("set_patient", {"patient_id": "p999"})]),  # unknown: error goes back to the model
         reply(calls=[call("set_patient", {"patient_id": "P003"}, 1)]),
         reply(calls=[call("patient_resistance", {"patient_id": "P003"}, 2),
-                     call("patient_what_if", {"patient_id": "P003", "side": "left", "narrowest_area_change_pct": 30}, 3)]),
+                     call("patient_what_if", {"patient_id": "P003", "procedures": ["valve_repair", "turbinate_reduction"]}, 3)]),
         reply(calls=[call("finish", {}, 4)]),
         reply(calls=[call("review_results", {}, 5)]),
         reply(calls=[call("report_flags", {"flag_ids": ["model_scope"]}, 6)]),
         reply(content="placeholder"),  # no numbers: fails the check, retried
         reply(content="placeholder"),  # fails again: code writes the template summary
     ])
-    out = agents.run_pipeline("Patient P003: what if the left narrowest section were 30% wider?", client=client,
-                              patients=table, patient_surrogate=model)
+    out = agents.run_pipeline("Patient P003: what would turbinate reduction and valve repair do?", client=client,
+                              patients=patients, surgery=surgery)
     assert out["facts"]["case"] == {"patient_id": "P003"}
-    assert out["facts"]["prediction"]["total_resistance"] == before
-    assert out["facts"]["what_if"][0]["total_resistance_after"] < before
+    assert out["facts"]["prediction"]["total_resistance"] == 0.3  # the stored OpenFOAM row of P003
+    assert "OpenFOAM" in out["facts"]["prediction"]["source"]
+    w = out["facts"]["what_if"][0]
+    assert w["label"] == "turbinate reduction + valve repair"
+    assert (w["total_resistance_before"], w["total_resistance_after"]) == (0.3, 0.265)
     assert "Real CT airway" in out["facts"]["flags"][-1]["text"]
-    assert out["summary_source"].startswith("template") and str(before) in out["summary"]
+    assert out["summary_source"].startswith("template") and "0.265" in out["summary"]
+
+
+def test_patient_without_openfoam_gets_a_code_message():
+    import pandas as pd
+
+    patients = pd.DataFrame([{**openfoam_record("P001", 0.2), "total_resistance": float("nan")}])
+    client = ScriptedClient([reply(calls=[call("set_patient", {"patient_id": "P001"})]),
+                             reply(calls=[call("finish", {}, 1)])])
+    out = agents.run_pipeline("Patient P001", client=client, patients=patients)
+    assert out["summary_source"].startswith("code") and "No OpenFOAM result" in out["summary"]
+    assert out["facts"]["flags"][0]["id"] == "no_openfoam"
+
+
+def test_surgery_options_rank_openfoam_runs():
+    from nasal.patient_flow import PatientFlow
+
+    patients, surgery = patient_tables()
+    tools = agents.Tools(patients=patients, flow=PatientFlow(patients, surgery))
+    out = tools.patient_surgery_options({"patient_id": "P003"})
+    # best: turbinate+valve (11.7% lower); turbinate alone (10.7%) reaches 90% of it with one procedure
+    assert out["best_plan"] == "turbinate reduction + valve repair" and out["best_drop_pct"] == 11.7
+    assert out["recommended_plan"] == "turbinate reduction" and out["recommended_drop_pct"] == 10.7
+    assert out["look_at_scan_plan"] == "turbinate reduction" and "in OpenFOAM" in out["recommended_result"]
+    with pytest.raises(agents.ToolError, match="no OpenFOAM run"):
+        tools.patient_surgery_options({"patient_id": "P001"})  # no stored plans and no live runs
+    with pytest.raises(agents.ToolError):
+        tools.patient_what_if({"patient_id": "P003", "procedures": ["rhinoplasty"]})
+    text = agents.template_summary({"prediction": {"total_resistance": 0.3, "left_resistance": 0.6,
+                                                   "right_resistance": 0.6, "source": "OpenFOAM"}, "surgery": out})
+    assert "turbinate reduction: 10.7% lower resistance (in OpenFOAM)" in text and "Best plan in OpenFOAM" in text
+    assert agents.missing_numbers(text, {"prediction": {"total_resistance": 0.3}, "surgery": out}) == []
+    assert agents.plan_name("turbinate_reduction+valve_repair") == "turbinate reduction + valve repair"
 
 
 def test_agent_eval_scores_a_run():
@@ -166,23 +218,6 @@ def test_planner_that_never_finishes_keeps_its_results():
     assert any(s["kind"] == "fallback" and s["agent"] == "planner" for s in out["log"])
 
 
-def test_surgery_tool_needs_labels_and_template_names_the_plan():
-    tools = agents.Tools(patients=__import__("pandas").DataFrame([{"patient": "P001"}]), patient_surrogate=object())
-    with pytest.raises(agents.ToolError):
-        tools.patient_surgery_options({"patient_id": "P001"})
-    facts = {"prediction": {"total_resistance": 0.2, "left_resistance": 0.4, "right_resistance": 0.4, "source": "s"},
-             "surgery": {"recommended_plan": "turbinate reduction + valve repair", "recommended_drop_pct": 6.0,
-                         "recommended_result": agents._drop_text("turbinate reduction + valve repair", 6.0, "predicted"),
-                         "look_at_scan_result": agents._drop_text("septoplasty", -2.0, "predicted"),
-                         "openfoam_check": {"recommended_plan_result": agents._drop_text("x", 14.1, "in OpenFOAM"),
-                                            "best_plan": "valve repair"}}}
-    text = agents.template_summary(facts)
-    assert "turbinate reduction + valve repair: 6.0% lower" in text and "14.1% lower" in text
-    assert "septoplasty: 2.0% higher" in text
-    assert agents.missing_numbers(text, facts) == []
-    assert agents.plan_name("turbinate_reduction+valve_repair") == "turbinate reduction + valve repair"
-
-
 def test_recommend_surgery_uses_the_final_stage_recommender():
     tools = agents.Tools()
     tools.set_case(CASE)
@@ -192,3 +227,23 @@ def test_recommend_surgery_uses_the_final_stage_recommender():
     text = agents.template_summary({"prediction": {**tools.predict_resistance(CASE)}, "surgery": out})
     assert "Why:" in text and agents.missing_numbers(text, {"prediction": tools.results["prediction"],
                                                              "surgery": out}) == []
+
+
+def test_every_request_goes_to_openai_with_store_false():
+    expected = round(evaluate(CaseParams(**CASE))["total_resistance"], 4)
+    after = round(evaluate(CaseParams(15.0, 1.0, 0.5))["total_resistance"], 4)
+    client = ScriptedClient(happy_script([f"Total resistance is {expected} Pa*s/cm^3, or {after} with a wider valve."]))
+    out = agents.run_pipeline("narrow valve", client=client)
+    assert all(r["store"] is False and "extra_body" not in r for r in client.requests)
+    assert {r["model"] for r in client.requests} == {agents.OPENAI_MODEL}
+    assert out["model"]["name"] == agents.OPENAI_MODEL and "OpenAI" in out["model"]["provider"]
+    other = ScriptedClient(happy_script([f"Total resistance is {expected} Pa*s/cm^3, or {after} with a wider valve."]))
+    agents.run_pipeline("narrow valve", client=other, model="gpt-4.1")
+    assert {r["model"] for r in other.requests} == {"gpt-4.1"}
+
+
+def test_session_history_is_sent_as_context():
+    assert agents.with_history("next?", None) == "next?"
+    text = agents.with_history("and septoplasty?", [{"question": f"q{i}", "answer": f"a{i}"} for i in range(6)])
+    assert text.endswith("New request: and septoplasty?")
+    assert "q2" in text and "q5" in text and "q1" not in text  # only the last four turns

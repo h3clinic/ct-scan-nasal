@@ -1,37 +1,143 @@
 # Nasal0
 
-A prototype for evaluating nasal airway obstruction. It builds airway geometries (parametric tubes, and real patient airways from CT), estimates airflow resistance by region, and wraps the tools in a small-model agent loop that explains the results. Every language model stays at or under 33B parameters. Physics and decision rules are plain code, never a language model, so every number traces back to a formula or a simulation.
+**Patient-specific nasal airflow analysis from a CT scan, with traceable physics and virtual surgery.**
 
-## At a glance
+Nasal0 turns a patient's 3D CT volume into a segmented nasal airway, estimates where airflow resistance occurs, and lets a clinician compare modeled surgical changes before choosing a plan. OpenFOAM computes the airflow. Language models may explain results and operate the tools, while code validates their numeric claims against the computed airflow values.
 
-Built for the NVIDIA x Red Hat Small Models Hack; see [SUBMISSION.md](SUBMISSION.md) for the pitch and track mapping, and [PRESENTATION.md](PRESENTATION.md) for the demo script.
+The project is open source and can run on a local workstation. CT volumes stay on that machine. A fully local Qwen explainer is available, and cloud agents are optional.
 
-- **Real anatomy:** 130 NasalSeg CT airways, 126 simulated in OpenFOAM on NVIDIA Brev (median nasal resistance 0.146 Pa·s/cm³ at 150 Pa).
-- **Fast surrogate:** under 0.2 ms per prediction, 16.3% mean side error (cross-validated) against 29.9% for "average patient".
-- **Four agents** on NVIDIA Nemotron 3.5 Lightning 30B-A3B (3B active), served with vLLM. On 16 fixed probes (`nasal-agents --eval`), all 16 runs completed and 15 set the right case. 3 invalid tool calls out of 98 were caught by code and recovered, and every number the Explainer wrote either passed the code check or was replaced by the code template.
-- **Virtual surgery, verified in OpenFOAM:** on 10 obstructed real airways, Workflow++ reached the best plan's drop for 10 of 10, the standard rule for 1 of 10.
-- **Data:** every simulated result (125 patients, 96 surgery runs, 106 idealized airways, surrogates, agent evaluation) is in [dataset/](dataset/README.md), CC BY 4.0.
-- **Demo:** live at https://7a5747cfe97ac7e65b.gradio.live; `nasal-demo`, a 3D resistance map of a real patient with what-if sliders and live agent steps.
+> **Current status**
+> Nasal0 is an actively developed prototype. The CT import, segmentation, OpenFOAM pipeline, virtual operations, agents, browser studio, command-line tools, and stored validation results are implemented. The modeled procedures and decision thresholds have not been reviewed by an ENT.
+
+## What a clinician can do
+
+1. **Import the patient's scan.** Open a DICOM series, NIfTI volume, or NRRD file. A single 2D image is not enough because the workflow needs the full 3D airway.
+2. **Create the airway model.** Nasal0 crops a full-head scan to the nasal region and automatically labels the right cavity, left cavity, and nasopharynx.
+3. **Run airflow analysis.** OpenFOAM applies a 150 Pa pressure difference and reports total, side-specific, and regional resistance. The airway can be colored by where resistance is concentrated.
+4. **Explore possible changes.** Apply modeled turbinate reduction, valve repair, septoplasty, or a targeted widening. Each edit shows how much modeled airway volume was added or removed.
+5. **Verify each candidate.** Run OpenFOAM on the changed airway and compare the result with the original. The interface can show solver convergence, wall pressure, air speed, and resistance while the run is in progress.
+6. **Review the complete trail.** Spectator mode records each operation, undo, simulation, result, and agent tool call so the path to the final comparison can be replayed.
+
+The clinician remains the decision maker. Nasal0 provides a reproducible airflow comparison and does not replace symptoms, examination, endoscopy, rhinomanometry, or clinical judgment.
+
+## Why the results are traceable
+
+```text
+Patient CT
+   ↓ local import and segmentation
+3D airway label
+   ↓ OpenFOAM
+Baseline airflow and regional resistance
+   ↓ modeled procedure
+Edited airway
+   ↓ OpenFOAM verification
+Before and after comparison
+   ↓ optional local or cloud explanation
+Clinician review with a replayable audit trail
+```
+
+- Physics, geometry changes, thresholds, and number checks are ordinary Python code.
+- Every resistance value shown for a real airway comes from a stored or newly run OpenFOAM case.
+- The surgeon agent can select operations, but code constrains their side, region, and depth and requires an OpenFOAM check before it can finish.
+- Explanations are rejected or replaced when they include a number that is not present in the computed facts.
+- Inputs, edits, simulations, and results can be inspected without trusting a model's prose.
+
+## Evidence in this repository
+
+| Component | Result | Important context |
+| --- | --- | --- |
+| Patient airflow dataset | 126 of 130 NasalSeg airways simulated | Median resistance was 0.146 Pa·s/cm³ at 150 Pa |
+| Patient surrogate | 16.2% mean side error | Cross-validated with duplicate scans kept in the same fold; under 0.3 ms per prediction |
+| Automatic segmentation | 0.85 airway Dice at the default −300 HU threshold | Grouped cross-validation on 123 usable NasalSeg scans; resistance agreement remains substantially weaker than label overlap |
+| Virtual surgery study | Workflow++ reached at least 90% of the best modeled drop for 8 of 10 airways | It selected the same turbinate reduction and valve repair plan for all 10, so it did not yet demonstrate patient-specific plan selection |
+| Local explainer | 56 of 67 held-out answers passed the full fact check | Qwen2.5-1.5B, trained on 555 checked answers; median 2.2 seconds per answer on the test GPU |
+
+The full inputs and outputs are published in [`dataset/`](dataset/README.md) under CC BY 4.0. The detailed methods, failure cases, and limitations appear below rather than being hidden behind headline metrics.
+
+## Privacy and deployment
+
+The core workflow can stay inside a clinic-controlled machine.
+
+- CT import, segmentation, airway editing, OpenFOAM simulation, and the local Qwen explainer run locally.
+- A patient CT is never sent to a language-model provider.
+- When a cloud agent is enabled, it receives only the patient identifier, the clinician's question, and numbers already computed by code.
+- OpenAI requests use `store=False`. Other providers follow their own retention policies.
+- An API key may remain in memory for the browser session or be saved in the operating system's credential manager. It is not written to a project file.
+- Anthropic, Google Gemini, OpenRouter, and custom OpenAI-compatible endpoints are supported in addition to OpenAI.
+
+These controls support a privacy-conscious deployment, but HIPAA compliance also depends on the clinic's infrastructure, access controls, contracts, policies, and operating procedures.
+
+## Quick start
+
+Clone the repository, then launch the setup script from its root.
+
+**Windows**
+
+```bat
+start-studio.bat
+```
+
+**macOS or Linux**
 
 ```bash
-pip install -e ".[dev,sim,surrogate,agents,patients,demo]"
+./start-studio.sh
+```
+
+The launcher creates a virtual environment at `~/.venvs/ct-scan-nasal`, installs the studio, runs the setup checks, and opens `http://127.0.0.1:7861`. Use `--update` to reinstall after pulling changes or `--no-browser` to start without opening a browser.
+
+For development and tests
+
+```bash
+python -m pip install -e ".[dev,sim,surrogate,agents,patients,segment,studio]"
+python -m nasal.setup_check
 pytest
 ```
 
-## Design
+### Requirements and graceful fallbacks
 
-### Agents (small language models)
+The setup checker explains what is installed, what is missing, and which parts still work.
 
-All four agents run on one served model, [NVIDIA Nemotron 3.5 Lightning 30B-A3B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4) (NVFP4). It has **30B total parameters and 3B active per token**, so it meets the 33B limit. Each agent has its own instructions and may call only its own tools.
+| Needed for | Requirement | Without it |
+| --- | --- | --- |
+| Starting the app | Python 3.12 and the studio's packages (the launcher installs them) | the studio does not start |
+| Airflow runs | Docker Desktop, running, and the OpenFOAM image (`python -m nasal.setup_check pull`, about 1.1 GB) | stored OpenFOAM results still show; new airways and plans cannot be simulated |
+| Uploaded scans | the segmentation model, `data/segment_model.joblib` (`nasal-segment train`) | NasalSeg expert labels still open |
+| Local model, no API key | Ollama with `nasal-explainer` (see Local explainer) | the cloud agents work with an API key |
+| NasalSeg patients (optional) | `NASALSEG_ROOT`, or `--images` and `--labels` | uploaded scans only |
+
+`python -m nasal.setup_check` (or `nasal-setup`) prints the same checks. Every check is quick and changes nothing.
+
+## Repository guide
+
+| Path | Contents |
+| --- | --- |
+| [`src/nasal/`](src/nasal/) | CT import, segmentation, anatomy, airflow, virtual surgery, agents, studio, and evaluation code |
+| [`tests/`](tests/) | Unit and integration tests for the complete pipeline |
+| [`dataset/`](dataset/README.md) | Published OpenFOAM results, virtual surgery results, and trained model artifacts |
+| [`docs/figures/`](docs/figures/) | Segmentation evaluation figures |
+| [`SUBMISSION.md`](SUBMISSION.md) | Hackathon submission and track mapping |
+| [`PRESENTATION.md`](PRESENTATION.md) | Demo script |
+
+## Technical design
+
+### Agents
+
+All four agents run on one model through an OpenAI-compatible API: OpenAI's `gpt-4.1-mini` by default (set it in the studio's Settings, with `--model`, or with `NASAL_OPENAI_MODEL`), or a provider picked in the studio's Settings (`nasal.providers`: Anthropic, Google Gemini, OpenRouter or a custom address; the provider is detected from the pasted key). The providers do not publish their models' sizes. Requests to OpenAI are sent with `store=False`; what other providers keep is set by their own data policies, and only the patient id, the question and computed numbers are sent, never a CT. Each agent has its own instructions and may call only its own tools.
 
 | Agent | Model | Tools it may call | Job |
 | --- | --- | --- | --- |
-| Case | Nemotron 3.5 Lightning 30B-A3B | `set_case`, `set_patient` | Picks a real NasalSeg patient by id, or turns a description into the three case parameters; code validates them and returns errors for the model to fix |
-| Planner | Nemotron 3.5 Lightning 30B-A3B | `predict_resistance`, `formula_resistance`, `what_if`, `patient_resistance`, `recommend_surgery`, `patient_what_if`, `patient_surgery_options`, `finish` | Decides which physics tools answer the request; for surgery questions, scores every combination of turbinate reduction, valve repair and septoplasty on the patient's CT airway and attaches the OpenFOAM check where one was run |
-| Critic | Nemotron 3.5 Lightning 30B-A3B | `review_results`, `check_parameters`, `report_flags` | Runs the code checks and picks which flags to show; it can cite only flag ids the checks produced |
-| Explainer | Nemotron 3.5 Lightning 30B-A3B | none | Writes the plain-language summary; code rejects any number not in the tool results and retries once, then falls back to a template written by code |
+| Case | OpenAI (`gpt-4.1-mini`) | `set_case`, `set_patient` | Picks a real NasalSeg patient by id, or turns a description into the three case parameters; code validates them and returns errors for the model to fix |
+| Planner | OpenAI (`gpt-4.1-mini`) | `predict_resistance`, `formula_resistance`, `what_if`, `patient_resistance`, `recommend_surgery`, `patient_what_if`, `patient_surgery_options`, `finish` | Decides which physics tools answer the request. For a real patient, every tool reads OpenFOAM: the patient's own run, one procedure plan's run, or all 7 plans for surgery questions (stored runs, or new runs with `--live` and in the studio) |
+| Critic | OpenAI (`gpt-4.1-mini`) | `review_results`, `check_parameters`, `report_flags` | Runs the code checks and picks which flags to show; it can cite only flag ids the checks produced |
+| Explainer | OpenAI (`gpt-4.1-mini`) | none | Writes the plain-language summary; code rejects any number not in the tool results and retries once, then falls back to a template written by code |
 
-The agent count stays at four: more agents mostly add latency and failure points. Surgery questions go through the decision rules in `nasal.decision`: `recommend_surgery` runs the final-stage recommender on a synthetic case, and `patient_surgery_options` applies the same Workflow++ rule, technique reasons and dominant-region check to a real CT airway. The rule thresholds are placeholders until an ENT reviews them.
+The surgeon is a separate agent because it modifies an airway and runs its own verification loop.
+
+| Agent | Model | Tools it may call | Job |
+| --- | --- | --- | --- |
+| Surgeon (separate, `nasal.surgeon`) | same provider | `airway_status`, `technique_info`, `operate`, `undo`, `simulate`, `finish_surgery` | Operates on a real CT airway with the parametric techniques, runs OpenFOAM on each candidate (at most 6 runs) and keeps the best verified airway; it may not finish before checking at least one operation in OpenFOAM |
+
+The agent count stays at four: more agents mostly add latency and failure points. Surgery questions go through the decision rules in `nasal.decision`: `recommend_surgery` runs the final-stage recommender on a synthetic case, and `patient_surgery_options` applies the same Workflow++ rule, technique reasons and dominant-region check to a real CT airway, using OpenFOAM's result for each plan (`nasal.patient_flow`). The rule thresholds are placeholders until an ENT reviews them.
 
 ### Tools (plain code, not language models)
 
@@ -43,20 +149,23 @@ The agent count stays at four: more agents mostly add latency and failure points
 | Meshing | gmsh (Python API) | **Done**: `nasal.simulate.mesh_side` |
 | Airflow ground truth | OpenFOAM v2606 (`opencfd/openfoam-run:2606` in Docker), simpleFoam | **Done**: `nasal.simulate`, `nasal-simulate` |
 | Real patient airways | NasalSeg CT labels, voxel hex mesh written as an OpenFOAM polyMesh | **Done**: `nasal.anatomy`, `nasal-patients` |
+| CT to airway (no expert labels) | Threshold + watershed regions + random forest (scikit-image, scikit-learn) | **First version**: `nasal.segment`, `nasal-segment`; see CT to airway |
+| CT import (DICOM, NIfTI, NRRD) | pydicom, nibabel; crop to the nose from the nose tip and hard palate | **First version**: `nasal.ct_import`, in the studio upload and `nasal-segment run`; crop not yet tried on a real full-head scan |
 | Fast stand-in model | PyTorch MLP (tubes), power law on measured geometry (patients) | **Done**: `nasal.surrogate`, `nasal-surrogate` |
 | Decision rules (standard and improved) | Plain Python functions | **Prototype**: `nasal.decision` (tubes) and `nasal.decision.patient` (real airways, verified in OpenFOAM); thresholds are placeholders pending ENT review |
 | Comparison and logging | pandas + JSON agent log | **Done**: `nasal-agents --log` |
-| Demo | Gradio + Plotly | **Done**: `nasal.demo`, `nasal-demo` |
-| Model serving | vLLM `v0.27.1` on NVIDIA Brev (1x H100), OpenAI-style endpoint | **Done**: see Agents usage |
+| Local explainer (distilled Qwen) | Qwen2.5-14B teacher in Ollama (Docker), LoRA on Qwen2.5-1.5B (PyTorch, PEFT) | **First version**: `nasal.distill`, `nasal-distill`, `scripts/distill_train.py`; `nasal-explainer` (0.99 GB) in Ollama; see Local explainer |
+| Studio (CT to surgery in one app) | Gradio + Plotly, OpenFOAM in Docker | **First version**: `nasal.studio`, `nasal-studio`, with the live OpenFOAM view (`nasal.live`) and spectator mode (`nasal.spectator`); see Studio |
+| Language model | OpenAI API (`openai` Python client), key from Settings or `OPENAI_API_KEY` | **Done**: see Agents usage |
 
 ## Workflow
 
 1. **Generate cases**: the geometry tool makes a few hundred synthetic patients with known parameters. *(done)* Real airways from 130 NasalSeg CT scans are also built and measured. *(done; see Real patients)*
 2. **Simulate**: mesh each shape and run OpenFOAM for resistance by region. This takes the longest, so it starts first. *(done: 106 idealized cases and 126 real patients)*
 3. **Train the fast model** on the simulation results, recording its error and speedup. *(done; see Fast surrogate)*
-4. **Wire up the agents**: the Case agent sets parameters, the Planner calls the fast model, the formula and what-if tools, the Critic checks the results and the Explainer writes the summary. *(done; the placeholder decision rules are not wired in yet)*
+4. **Wire up the agents**: the Case agent sets parameters, the Planner calls the physics and decision tools, the Critic checks the results and the Explainer writes the summary. *(done; decision thresholds remain placeholders)*
 5. **Verify with real simulation**: for a sample of cases, run virtual surgery in OpenFOAM and compare both rules' plans against it. This produces the results table. *(done on 10 real airways; see Step 5)*
-6. **Demo**: sliders change the anatomy, the resistance map updates, and agent steps appear live with surrogate error and speed. *(done for real patients; see Demo)*
+6. **App**: open a CT, run OpenFOAM live, try plans, let the agent operate and replay what it did. *(done; see Studio)*
 7. **Doctor's check**: at least one ENT review of the rules.
 
 ## Case parameters
@@ -141,6 +250,7 @@ No constants have been fitted yet.
 `nasal.anatomy` builds real airways from [NasalSeg](https://zenodo.org/records/13893419) (130 CT scans with voxel labels, CC BY 4.0, DOI 10.1038/s41597-024-04176-1). These are real anatomy, but their flow is still a model: rigid walls, no mucosa, a single steady breath.
 
 - **Labels:** by position in LPS coordinates, 1 and 2 are the right and left maxillary sinuses, 3 and 4 the right and left nasal cavities, and 5 the nasopharynx. `check_labels` verifies this for each scan. 3 scans (P047 to P049) fail the check; they are kept but marked `labels_ok = False`. Scans stored with a reversed axis are flipped on load.
+- **Flipped label headers:** 9 label files (P025, P042, P074, P089, P100, P101, P108, P118, P129) claim a reversed vertical axis, with an origin outside their own scan, while their voxels are stored in the CT's order. Read with that header, only about 40% of the airway label lies on air; in the CT's orientation, over 88% does (see CT to airway). `load_labels` now uses the CT's orientation when the image sits next to the labels (`images/` beside `labels/`, as NasalSeg ships them). The first OpenFOAM runs of these patients used the upside-down airway, with the outlet cut at the wrong end of the nasopharynx. All 8 that had run were re-run in the CT's orientation: total resistance changed by −12% to +5% (P100 −12%, P042 −10%, P089 −7%, P108 −7%, P025 −6%, P129 −4%, P118 −4%, P074 +5%), and each side's resistance stayed within 3 percentage points of its total's change. P101 still fails, for the reason below. The results below use the re-run rows.
 - **Domain:** both nasal cavities plus the nasopharynx; the sinuses are left out. Each nostril inlet is a flat cut where that cavity's cross-section first reaches 30% of its median. The outlet is a flat cut where the nasopharynx is wide (half its widest axial section). The narrow lower tail of the label is cut off because it otherwise took most of the pressure drop, and rhinomanometry measures pressure in the nasopharynx.
 - **Mesh:** every airway voxel (0.59 × 0.59 × 1.5 mm) becomes one hexahedral cell, written directly as an OpenFOAM polyMesh (median 65k cells). The mesh always passes `checkMesh` with zero non-orthogonality. The cost is stair-stepped walls.
 - **Solver:** the same simpleFoam k-omega SST setup as the tubes, with both nostrils at 150 Pa total pressure and the outlet at 0. One run gives the left and right flows. Regions are positions along each cavity (0–20% vestibule, 20–35% valve, 35–85% turbinate, the rest plus the nasopharynx choana), not anatomical landmarks.
@@ -155,11 +265,64 @@ No constants have been fitted yet.
 
 | Mean absolute error vs OpenFOAM (5-fold, 125 patients) | Power law | Average patient |
 | --- | --- | --- |
-| Total resistance | 14.4% | 24.5% |
-| Side resistance | 16.3% | 29.9% |
-| Region resistance | 35.0% | 41.3% |
+| Total resistance | 14.2% | 24.8% |
+| Side resistance | 16.2% | 30.1% |
+| Region resistance | 34.8% | 41.6% |
 
-It underpredicts the most obstructed sides (about 2.6 Pa·s/cm³ in OpenFOAM, predicted about 0.34), so the agents' Critic flags any patient where the surrogate and that patient's OpenFOAM result differ by more than 25%.
+The folds are grouped by patient: the duplicate scans in NasalSeg (P002/P003, P009/P010, P080/P081, `params.DUPLICATE_SCANS`) are always held out together. With ungrouped folds the errors were within 0.6 points of these.
+
+It underpredicts the most obstructed sides (about 2.6 Pa·s/cm³ in OpenFOAM, predicted about 0.34). The agents and the studio therefore use OpenFOAM results for real patients, not this surrogate.
+
+## Smooth walls and label repair (in progress)
+
+The voxel airways have stair-stepped walls (the scans are 0.59 x 0.59 mm in-plane but 1.5 mm between slices). `nasal.smooth` builds smooth-walled airways for OpenFOAM:
+
+- **Smooth surface from the labels:** the airway's signed distance is Gaussian-smoothed (0.75 mm), shifted so the airway keeps its voxel volume, and Taubin-smoothed; the nostril and outlet openings stay flat, at the same cuts as the voxel case. The surface is meshed with snappyHexMesh (0.8 mm cells, 0.4 mm at the wall, 0.2 mm at the openings) and region resistances are read from cutting planes at the same region boundaries as `anatomy.read_patient`. P022: 346,300 cells, 17 minutes on 8 cores at 900 iterations (the voxel case: 72,575 cells, about 2.5 minutes).
+- **Surface from the CT:** optionally the wall is where the lightly smoothed CT crosses -500 HU (halfway between air and soft tissue), within 2 voxels of the labeled airway and without the sinuses.
+- **CT-guided label repair** (`repair_labels`): unlabeled voxels below -300 HU within 2 voxels of the airway join it, with the nearest airway label; sinus labels are never changed.
+
+**What P022 showed.** Total resistance (left choana in brackets), Pa·s/cm³, 900 iterations:
+
+| | Expert labels | CT-repaired labels | CT wall at -500 HU |
+| --- | --- | --- | --- |
+| Voxel walls | 0.2633 (0.914) | 0.1491 (0.114) | |
+| Smooth walls | 0.1302 (0.139) | 0.1059 (0.111) | left cavity not connected |
+
+- The expert label joins P022's left cavity to the nasopharynx through only 21 voxel faces (18.5 mm²; the right side: 122 faces, 107 mm²), while 95% of the 277 unlabeled voxels between them are below -300 HU (median -856 HU). The voxel model's left choana resistance comes from that labeling, not from a narrow choana in the CT at -300 HU.
+- At -500 HU the left cavity does not reach the nasopharynx at all, so the opening is a slit at the limit of the CT's resolution: whether it is closed, tight or open depends on where the wall is drawn.
+- Over the 125 simulated patients, how much a cavity's label touches the nasopharynx label correlates with its voxel choana resistance (Spearman -0.54 left, -0.59 right); P022 (left), P064 (both sides) and P011 (right) touch over fewer than 50 voxels.
+- The repair at -300 HU adds a rim of partly-air voxels around the whole airway (9,201 voxels, 13% more airway for P022), not only the gaps, and smoothing lowers resistance further (stair-stepped walls add friction). Which wall position matches real noses cannot be settled without measured airflow (rhinomanometry) for these patients, so the stored results, the surrogate and the surgery study still use the expert voxel labels.
+
+## CT to airway (no expert labels)
+
+Everything above starts from NasalSeg's expert-drawn labels. `nasal.segment` starts from the raw CT instead, so a new patient's scan can enter the pipeline. Its output is a label volume in the same convention (3 right cavity, 4 left, 5 nasopharynx), so the cuts, meshing and OpenFOAM run on it unchanged. The input has to be a CT volume (a stack of slices); a single 2D image cannot give a 3D airway. A NasalSeg scan has 39 to 59 axial slices (median 51), 1.5 mm apart, with 0.59 mm pixels, already cropped to the nose.
+
+**Any CT in** (`nasal.ct_import`): a DICOM series (a folder, a .zip, or the slice files themselves; the largest CT series is used), NIfTI (.nii, .nii.gz) or NRRD is read into the same layout as NasalSeg: Hounsfield units, axes toward the patient's left, back and top, positions in mm. Slices must be evenly spaced and axis-aligned. Scans with a tilted gantry are refused rather than resampled, and so is compressed DICOM pixel data without an installed decoder. A full-head scan (wider than 130 mm or taller than 100 mm) is cropped to a box around the nose. The box is placed from the nose tip (the most forward point of the head near the midline) and the hard palate (found just below the tip, then in a wider window, then in the whole scan). It spans ±55 mm around the midline, from 5 mm in front of the tip to 135 mm behind it, and from 38 mm below the palate to 80 mm above it. These sizes cover the expert labels of all 130 NasalSeg scans relative to the same landmarks, plus a margin. Placed on each NasalSeg scan, the box contains the whole labeled airway in 130 of 130. A NasalSeg scan placed inside a larger empty volume is cropped back and segments to the same airway (Dice 1.000, 1.000, 0.999). The crop has not yet been tried on a real full-head scan, so check the airway it gives.
+
+**Method:**
+1. **Air:** every voxel below a threshold (default −300 HU). Air outside the head is dropped by keeping, in each axial slice, only air enclosed by tissue.
+2. **Regions:** the air is split at its narrow necks (watershed on the distance to the wall), so a sinus joined to the nose through a thin opening becomes a separate region.
+3. **Palate:** the hard palate is found as bone with air directly above it, near the midline in the front of the head. Heights are measured from it, because many scans include an open mouth whose air would otherwise distort any height measured from the extent of the air. Air below the palate and in front of its back edge (the mouth) is never airway.
+4. **Classifier:** a random forest decides from each region's position, thickness, size and intensity whether it is airway. It is trained on the expert labels.
+5. **Assembly:** rejected regions that bridge two large kept pieces (for example a choana between a cavity and the nasopharynx) are added back, and the largest connected airway is kept.
+6. **Labels:** walking from the nostrils backwards, the two main air regions of each coronal slice are the left and right cavities. The nasopharynx starts at the first 3 slices in a row where air runs unbroken between the cavities over at least 40% of the airway's height. That search starts halfway back along the airway: in the 127 expert label sets that pass the checks the nasopharynx starts between 52% and 83% of the way back (median 69%). Without such a join it starts where the two separate passages end, or else at 69%. Sides come from the regions, not from a fixed midline, so a deviated septum does not swap them.
+
+**Evaluation:** 5-fold cross-validation grouped by patient (duplicate scans share a fold), on the 123 scans whose expert labels pass the checks (P047 to P049 fail the position check; P086, P098, P101 and P102 have pieces that do not connect). Every score below is on scans the classifier did not train on. Resistance is the patient surrogate's prediction for the cut airway; OpenFOAM on the automatic airways is the next step.
+
+| Air threshold | Airway Dice (worst) | Per-side Dice | Nasopharynx Dice | Resistance, auto / expert (median, IQR) | Within 25% |
+| --- | --- | --- | --- | --- | --- |
+| −150 HU | 0.81 (0.39) | 0.63 | 0.85 | 1.37 (1.07 to 2.28) | 36% |
+| −200 HU | 0.83 (0.35) | 0.66 | 0.89 | 1.40 (1.14 to 1.97) | 31% |
+| **−300 HU** | **0.85 (0.59)** | **0.69** | **0.91** | 1.62 (1.25 to 2.37) | 24% |
+| −400 HU | 0.81 (0.01) | 0.64 | 0.88 | 2.06 (1.48 to 2.82) | 13% |
+
+- **Shape vs flow:** the threshold that best matches the experts' shape (−300 HU) is not the one that best matches their resistance. The nasal passages are only a few voxels wide, so the experts' labels include half-air edge voxels (their median intensity is about −500 HU). A stricter threshold drops those edges, narrows the passages and raises resistance. Dice alone hides this: 0.85 overlap still means a median 62% higher resistance.
+- **What fixed the failures:** the first version had 9 scans below 0.5 Dice. All 9 were the flipped label headers above, not segmentation errors: scored against the corrected labels, and trained on them, none is below 0.5 at −300 HU. The palate reference, the bridging step and the bounded nasopharynx search fixed the remaining cases where a cavity was dropped or the nasopharynx was split.
+- **Weakest cases:** P042, P057, P020, P070 and P045 (airway Dice 0.59 to 0.66). Their outline is mostly right, but one side is partly given to the other side or to the nasopharynx.
+
+![Threshold sweep](docs/figures/segment_threshold_sweep.png)
+![Typical case](docs/figures/segment_typical_case.png)
+![Flipped label headers](docs/figures/nasalseg_flipped_labels.png)
 
 ## Usage
 
@@ -167,7 +330,7 @@ It underpredicts the most obstructed sides (about 2.6 Pa·s/cm³ in OpenFOAM, pr
 pip install -e ".[dev]"
 nasal-generate -n 300 --seed 0 --out data          # writes data/cases.csv
 nasal-generate -n 300 --seed 0 --out data --stl    # also writes one STL per side per case
-pytest
+pip install -e ".[dev,agents,patients,segment,studio]" && pytest   # what CI runs; torch and gmsh tests skip without them
 ```
 
 `data/cases.csv` has one row per case: the parameters, total and per-side resistance and flow, and resistance for each side and region.
@@ -204,38 +367,42 @@ nasal-patients simulate --labels nasalseg/labels --ids P001 --procs 8    # OpenF
 nasal-surrogate --patients --sim data/patient_sim.csv                     # -> data/patient_surrogate.json
 ```
 
-`simulate` skips patients already in its output, so it can resume, and logs a failed patient and moves on. Each patient takes several minutes on 4 cores (we did not time them individually). We ran 12 batches of `--procs 4` on a 48-core Brev instance, each with its own `--out`, and trained on all the files together. With `data/patient_sim.csv` and `data/patient_surrogate.json` present, `nasal-agents` also accepts requests about a patient by id (for example "patient P022: what if the left narrowest section were 30% wider?").
-
-### Demo
+From raw CT instead of expert labels (`pip install -e ".[segment]"`; NasalSeg ships the CT images next to the labels):
 
 ```bash
-pip install -e ".[demo]"
-nasal-demo --labels nasalseg/labels    # needs data/patient_sim.csv and data/patient_surrogate.json
-nasal-demo --labels nasalseg/labels --share    # also prints a public gradio.live link (valid 72 h; keep this machine and the vLLM tunnel up)
+nasal-segment eval --images nasalseg/images --labels nasalseg/labels --thresholds -150 -200 -300 -400  # grouped CV -> data/segment_eval.csv
+nasal-segment train --images nasalseg/images --labels nasalseg/labels                                  # -> data/segment_model.joblib
+nasal-segment run --ct new_scan.zip --out new_scan_seg.nrrd                                             # one scan (DICOM folder/.zip, NIfTI or NRRD) -> NasalSeg-style labels
+nasal-segment holdout --images nasalseg/images --labels nasalseg/labels --ids P022 P064                # train without them, segment them
+nasal-patients simulate --labels data/segment_auto --ids P022 P064 --out data/segment_auto_sim.csv     # OpenFOAM on the automatic airways
 ```
 
-The demo opens at http://127.0.0.1:7860.
+`simulate` skips patients already in its output, so it can resume, and logs a failed patient and moves on. Each patient takes several minutes on 4 cores (we did not time them individually). We ran 12 batches of `--procs 4` on a 48-core Brev instance, each with its own `--out`, and trained on all the files together. With `data/patient_sim.csv` and `data/patient_surrogate.json` present, `nasal-agents` also accepts requests about a patient by id (for example "patient P022: what if the left narrowest section were 30% wider?").
 
-- **Patient:** pick any simulated NasalSeg patient (it opens on P022, whose left side has three times the right's resistance).
-- **3D airway:** an interactive Plotly view colored by each region's resistance, from that patient's OpenFOAM run or from the surrogate.
-- **What-if:** sliders widen or narrow each side's narrowest section and recolor instantly through the surrogate.
-- **Table:** OpenFOAM against the surrogate for every region, with the surrogate's error and its measured prediction time.
-- **Agents:** "Run agents" sends a question to the four agents and lists each step as it happens: tool calls, errors sent back, the code number check. Then it shows the summary and flags. The agents need the vLLM endpoint (see Agents); everything else works offline.
+### Studio
+
+```bash
+nasal-studio                                                     # opens at http://127.0.0.1:7861; upload a scan to start
+nasal-studio --images nasalseg/images --labels nasalseg/labels    # also lists the NasalSeg patients
+```
+
+The studio places scan import and patient selection on the left, the 3D airway and comparison views in the center, planning controls on the right, and the case assistant below. Settings contains setup checks and optional model-provider configuration.
+
+- **CT to airway:** upload a CT scan: DICOM (a .zip of the series or the slice files, which may have no extension), NIfTI or NRRD. A full-head scan is cropped to the nose (see Any CT in), and the info panel says how the scan was read and cropped. With `--images` and `--labels`, the NasalSeg patients are listed too. NasalSeg patients open with their expert labels; uploaded scans are segmented automatically (needs `data/segment_model.joblib` from `nasal-segment train`).
+- **Airflow:** every resistance shown comes from OpenFOAM: the stored run where one exists, otherwise **Run airflow** starts one in Docker. The patient surrogate is not used here, because on some airways it is off by more than 30% (P022: 0.141 against OpenFOAM's 0.263 Pa·s/cm³).
+- **Virtual surgery:** tick turbinate reduction, valve repair or septoplasty and press **Run airflow on plan**. The airway with the change is shown at once, with the air it adds and removes in mm³, and OpenFOAM runs unless a stored run exists. **Run all 7 plans** does every combination, and the table ranks them by OpenFOAM's resistance drop.
+- **Faster local runs:** app runs stop at 900 iterations instead of 3000 and use up to 8 cores each, two cases at a time on a 20-core machine; `--procs` and `--iterations` change that when starting the studio. In the 13 stored 3000-iteration patient runs, total flow at iteration 600 was already within 0.11% of the final value, and P022 run this way matched its stored run within 0.22% in every region in 237 s.
+- **Setup:** at start the studio checks Python packages, Docker, the OpenFOAM image, the segmentation model, Ollama and its model, the NasalSeg folders and the stored results (`nasal.setup_check`). Settings → Setup lists each one with a plain fix and what still works without it, and **Recheck** runs them again. A banner at the top names anything missing that the studio needs.
+- **Settings** (top right): paste an API key from OpenAI, Anthropic (Claude), Google Gemini or OpenRouter and press **Use key**; the provider is detected from the key, and a custom OpenAI-compatible address (for example a local Ollama server) can be set instead. It stays in the app's memory for that browser session; tick **Remember on this computer** to keep it in the operating system's credential store (Windows Credential Manager, through `keyring`), never in a file. **Test** checks the key with the selected provider and **Forget** removes it. The panel also sets the model; the surgeon agent uses it, and so does the console when the local model is missing.
+- **Live airflow:** while any OpenFOAM run started from the app is going (yours or the surgeon agent's), the Airway tab shows the solver as it works instead of a waiting message. Every 25 iterations the case samples the wall pressure over the whole airway and the air speed on three planes (one sagittal plane through each nasal cavity, one axial plane through both). The 3D view shows them on the airway, and a chart below plots the resistance at each iteration, computed from the nostril flows, together with the solver residuals. The top bar gives the iteration, the flow and the current resistance. These are the steady solver's intermediate states on its way to the result, not a time-accurate breath, and the inlet pressure ramps up over the first 300 iterations. `nasal.live` reads the running case and keeps only the newest sample on disk. Stored and command-line runs do not sample, so their results are unchanged.
+- **Surgeon agent** (Commands): type a goal and press **Let the agent operate**. The agent reads where the resistance sits, operates with the parametric techniques below, runs OpenFOAM on its airway, undoes what does not help and finishes with a verified result. The 3D view redraws after every cut (added air in green), shows each of the agent's OpenFOAM checks live and is recolored after every result. The console lists each tool call and ends with the agent's summary, which passes the number check or is replaced by a code summary.
+- **Spectator:** the Spectator tab replays every change made to the open airway, by you or by the surgeon agent, step by step. That includes what the agent said, each tool call (rejected ones too), each cut and undo, and each OpenFOAM start and result. Step through it, press **Play**, or leave **Follow live** on to watch an agent while it works. Each step shows the airway at that point, with every voxel added or removed since the original, and its OpenFOAM result if that airway was simulated. A chart shows the resistance at every simulated step. **Save session** writes the timeline to `data/spectator/` (one .npz: the original airway plus only the changed voxels of each step), and **Watch saved** replays a saved session later (`nasal.spectator`). A surgeon-agent run also saves itself there after every OpenFOAM result and when it finishes, so it can still be replayed if the browser page reconnects mid-run.
+- **Console:** questions about the open patient are answered by the local distilled model when Ollama has `nasal-explainer`: code picks the tools from the question, the student writes the answer on this computer, and nothing is sent off it (see Local explainer). Without the local model, the four cloud agents below answer, with the API key from Settings.
+- **Agents:** the console sends a question to the four agents, which read the same OpenFOAM results and can start the same runs as the app. They use the provider and model selected in Settings. OpenAI defaults to `gpt-4.1-mini` and sends requests with `store=False`; other providers apply their own retention policies. Earlier questions are kept as context only in the app's memory for that browser session, and **Clear** forgets them. Only the patient id, question and computed numbers are sent, never the CT.
 
 ### Agents
 
-Serve the model on a GPU machine. We used an NVIDIA Brev `scaleway_H100` instance with the flags from the model card's H100 recipe, minus speculative decoding:
-
-```bash
-docker run -d --name nemotron --gpus all --ipc=host -p 8000:8000 \
-  -v ~/.cache/huggingface:/root/.cache/huggingface vllm/vllm-openai:v0.27.1 \
-  --model nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 --served-model-name nemotron \
-  --max-model-len 65536 --max-num-seqs 64 --enable-prefix-caching --async-scheduling \
-  --mamba-backend flashinfer --mamba-ssm-cache-dtype float16 --mamba-cache-mode align \
-  --reasoning-parser nemotron_v3 --tool-call-parser qwen3_coder --enable-auto-tool-choice
-```
-
-Then forward port 8000 to your machine (for example `ssh -N -L 8000:localhost:8000 <instance>`) and run:
+The command-line agents use OpenAI by default and also accept the providers supported by `nasal.providers`. Set the relevant key, or configure it in the studio, and run:
 
 ```bash
 pip install -e ".[agents,surrogate]"
@@ -244,13 +411,82 @@ nasal-agents "Narrow valve, maybe 9 degrees, septum bends left. What if the valv
 
 It prints the summary and writes every model turn, tool call, tool result and check to `data/agent_log.json`.
 
-`nasal-agents --eval` runs 16 fixed probes (`nasal.agent_eval`), scores them in code and writes `data/agent_eval.json`. The probes include patient ids, a what-if, an unknown patient, an out-of-range valve angle and plain descriptions. Our run against the Brev endpoint:
+For a real patient (`nasal-agents "Patient P022: compare the modeled procedure options"`), resistance, procedure what-ifs and surgery options come from the stored OpenFOAM runs (`data/patient_sim.csv`, `data/patient_surgery.csv`). Surgery options need all 7 plans, which are stored for the 12 patients in Step 5. `--live --labels nasalseg/labels` runs OpenFOAM in Docker for anything missing (900 iterations, a few minutes per case); without it the tool says the run is missing instead of estimating. `--model` picks another OpenAI model.
 
-- **Runs:** 16/16 completed, with a median of 5.9 s per four-agent run.
-- **Case choice:** 15/16 set the right case. The miss: "septum to the right 0.5" became +0.5, which means the left in this project, and no code check can catch a wrong sign.
-- **What-ifs:** 6/6 run when the request asked for one.
-- **Tool calls:** 3 invalid out of 98, all caught by code and sent back; the model then recovered to a valid case.
-- **Explainer:** 14/16 passed the number check the first time; the other 2 were replaced by the code template. `NASAL_LLM_URL` and `NASAL_LLM_MODEL` point it at another OpenAI-compatible server. `--thinking` turns on the model's reasoning mode, which is off by default for speed. The predictions use `data/surrogate.pt` when it exists and the formula otherwise; the Critic flags which one was used. The agent tests use a scripted stand-in for the model and need no server.
+`nasal-agents --eval` runs 16 fixed probes (`nasal.agent_eval`), scores them in code and writes `data/agent_eval.json`. The probes include patient ids, what-ifs, an unknown patient, an out-of-range valve angle and plain descriptions. The patient what-if probes ask about procedures ("what if the turbinates were reduced?"). It reports completed runs, correct case choices, invalid tool calls caught by code, what-ifs run when asked, and how often the Explainer passed the number check. It has not been run on OpenAI yet, so no results are reported here.
+
+The predictions for synthetic cases use `data/surrogate.pt` when it exists and the formula otherwise; the Critic flags which one was used. The agent tests use a scripted stand-in for the model and need no server.
+
+### Local explainer (distilled Qwen)
+
+A small model that writes the answers on this computer, without an API: it explains the exact numbers, what they mean in practice, the procedures and how they are generally performed, each procedure's result in the model, consequences and alternatives. Numbers still come from code.
+
+- **Teacher:** Qwen2.5-14B-Instruct (4-bit, `qwen2.5:14b-instruct-q4_K_M`) in Ollama, run in Docker with the GPU:
+
+  ```bash
+  docker run -d --gpus all --name nasal-ollama -p 127.0.0.1:11434:11434 -v nasal-ollama:/root/.ollama \
+    -v "$PWD/data/distill/student/merged:/models/nasal-explainer:ro" -v "$PWD/scripts:/models/scripts:ro" ollama/ollama:0.12.6
+  docker exec nasal-ollama ollama pull qwen2.5:14b-instruct-q4_K_M
+  nasal-distill build --per-bundle 3
+  ```
+
+- **Data:** 221 fact bundles from the agents' tools: 125 patients' OpenFOAM results, the 12 surgery patients' plan options, and each of their 84 plans before and after. Every bundle also carries comparisons computed by code (median over all simulated patients, this patient's percentile, the harder side and by how much, the highest-resistance region). Each bundle gets all 3 questions of its kind. A teacher answer is kept only if every number in it is in the facts and it quotes the key results (the Explainer's number check), with two retries; 15 patients are held out for testing. `build` resumes where it stopped and writes `data/distill/examples.jsonl`.
+- **Procedure knowledge:** the teacher gets a short reference card on turbinate reduction, valve repair and septoplasty (techniques, risks, non-surgical alternatives) written from general textbook knowledge. It has not been reviewed by an ENT, so the procedure descriptions need that review before anyone relies on them.
+- **Student:** Qwen2.5-1.5B-Instruct, fine-tuned with LoRA (rank 16, 3 epochs) on the teacher's answers in a separate CUDA environment, then packed as a 4-bit model in Ollama. It runs with a 173-character prompt instead of the teacher's 2,700-character one, because it learned the rules and the procedure knowledge from the answers:
+
+  ```bash
+  nasal-distill student-data
+  python scripts/keep_awake.py -- python scripts/distill_train.py --data data/distill/student.jsonl --out data/distill/student --max-len 3072
+  docker exec nasal-ollama ollama create nasal-explainer -q q4_K_M -f /models/scripts/nasal-explainer.Modelfile
+  nasal-distill eval
+  ```
+
+  Only the answer's logits are computed for the loss: on a 12 GB GPU the full float32 logits (151k-token vocabulary) ran out of memory. Training needs the GPU to itself, so unload the teacher first (`ollama stop`). `scripts/keep_awake.py` keeps Windows from idle-sleeping until the command it wraps exits, without changing power settings.
+
+- **Local answers:** `nasal.distill.answer_locally` picks the tools from the question in code (the patient's OpenFOAM result; the named procedure's before and after; all plans when the question is about surgery) and asks the student. An answer whose numbers are all right but that leaves out a key result gets those results stated first by code; one with a wrong number is retried once and then replaced by the code template.
+
+**Results.** All 663 questions were asked: 622 answers passed the check (which also requires every procedure of a combined plan to be named) and 41 were dropped after three tries. The student trained on the 555 training answers in 31 minutes on an RTX 5070 Laptop GPU (12 GB); the held-out loss went from 1.046 to 0.358. On the 67 held-out questions (the same 15 patients, never seen in training), each model answering once:
+
+| | Student `nasal-explainer` (Qwen2.5-1.5B, 555 answers) | Previous student (359 answers) | Teacher (Qwen2.5-14B) |
+| --- | --- | --- | --- |
+| Size (4-bit) | 0.99 GB | 0.99 GB | 9.0 GB |
+| Passes the full check | 56 / 67 | 55 / 67 | 31 / 67 |
+| No number outside the facts | 65 / 67 | 66 / 67 | 61 / 67 |
+| Median time per answer (same GPU) | 2.2 s | 1.9 s | 21.4 s |
+| Median length | 171 words | 164 words | 143 words |
+
+The extra 196 training answers lowered the held-out loss (0.358 on these 67 questions; the previous student reached 0.401 on its 43) but did not change the pass rate beyond run-to-run variation: on the previous 43 held-out questions the new student passed 35 (the previous student 37). The students do better than the teacher on the full check because they only learned from answers that passed it; most of their failures are a left-out key result, which the local answer path then states by code. An earlier student, trained on 260 answers before the procedure rule, passed 22 of 26 held-out questions (21 in a repeat), so pass counts vary by a few between runs.
+
+- **Limits:** some answers repeat a list, and 2 of the 67 held-out answers used a number outside the facts (the local answer path would retry, then replace them). The procedure descriptions inherit the unreviewed reference card.
+
+### Surgeon agent
+
+`nasal.surgeon.run_surgeon` lets a language model plan and perform virtual surgery on one patient's CT airway; the studio runs it from **Let the agent operate**. The model only chooses tool calls:
+
+- **Techniques** (`nasal.decision.patient.operate`): `turbinate_reduction` (lateral wall of the turbinate region), `valve_repair` (valve region sideways and vertically), `septoplasty` (straightens local bulges of the septum; see Step 5) and `widen` (a general cut of one region: vestibule, valve, turbinate or choana; lateral, vertical or all directions). Each takes a side (left, right or both; septoplasty has none) and a depth in millimetres up to 2 mm (`depth_mm`). The depth becomes voxel layers per axis: voxels are about 0.6 mm wide but 1.5 mm between slices, so 1.2 mm is 2 layers sideways and 1 vertically, and under 0.75 mm there is no vertical change. Whole layers (`depth`, 1 to 3) still work, for the campaign's reference plans. These sizes are modeling choices, not surgical prescriptions; the operations never cross the septum or the nostril and outlet cuts.
+- **Edited volume:** every operation and the final result report the airway added and removed in mm³, separately (`edited_volume`), since a net volume can hide large opposite changes. This measures the modeled airway, not tissue removed in surgery.
+- **No surgery:** `finish_surgery` can keep none, the original airway, after at least one operation was checked. Code, not the model, adds the recommendation: "no surgery" when no operation is kept or the kept plan lowers resistance by less than the placeholder minimum benefit (5%, `PLACEHOLDER_THRESHOLDS["min_benefit_pct"]`, not a clinical value).
+- **Checks:** every candidate is run in OpenFOAM (the studio's settings: 900 iterations by default; at most 6 runs per session). The agent may not finish before checking at least one operation, and its final airway is always simulated. Its summary passes the number check or is replaced by a summary written by code.
+- **Technique notes:** `technique_info` returns the same general textbook summary as the distillation card (techniques, risks); no ENT has reviewed it. The agent does not search the literature.
+- **First run:** on P022 with the local Qwen2.5-14B (as a custom provider through Ollama) and two OpenFOAM runs, the agent tried a left turbinate reduction (0.2633 to 0.2618 Pa·s/cm³), added a right valve repair (0.2524, 4.2% lower than before surgery) and finished with a summary that passed the number check, in 413 s. It did not target the left choana, which holds most of that side's resistance and which only the general `widen` cut can reach. A second run from the studio's **Let the agent operate**, same model and patient, chose turbinate reduction on both sides (0.2633 to 0.2403 Pa·s/cm³, 8.8% lower; 2 OpenFOAM runs, 509 s), redrawing the airway after each cut and recoloring it after each run. In an earlier run, before the rule that at least one operation must be checked, the same model finished without operating.
+
+### Surgeon-agent campaign (in progress)
+
+Thousands of synthetic problem airways, each solved by the surgeon agent and checked in OpenFOAM (`nasal.mutations`, `nasal.campaign`):
+
+```bash
+nasal-campaign generate --n 1000 --seed 0              # data/campaign/cases.jsonl
+nasal-campaign run --executor smooth --limit 5 --data nasalseg   # local Docker; --executor ssh --host <name> for a remote machine
+nasal-campaign report
+```
+
+- **Cases:** a real airway (expert labels; the campaign uses the smooth-wall reconstruction) with one to three pathologies of random side and severity: turbinate hypertrophy, valve collapse, septal deviation, choanal narrowing, each 1 to 3 voxel layers. Since commit 40f3796 the septal deviation is a local bulge (the middle half of the septum front to back and top to bottom moves toward one side, trading air one for one), the inverse of the new local septoplasty; septoplasty straightens a septum rather than restoring its natural curve, so it is graded by straightness, not voxels restored. After commit a38b5fe (robust septal plane), septoplasty at depth equal to the severity leaves the bulged rows at least as straight as the original septum (mean distance from the fitted plane) in all 16 tries at severity 1 or 2 (P001, P022, P031, P064, both sides), and in 3 of 8 at severity 3, where it takes the mean from 1.9–4.5 voxels down to 0.4–1.6 (originals 0.6–0.9). A mutation never closes a side; its severity is lowered instead. Every case is rebuilt exactly from its seed.
+- **Reference:** the oracle plan undoes the generated pathologies with the approved operations (for example turbinate hypertrophy left, 2 layers, is undone by turbinate reduction left, depth 2). An oracle that includes septoplasty is also simulated without it, and the better of the two counts (the pilot cases were built before commit 40f3796, when the voxel septoplasty removed more airway than it added). The best known drop is the larger of the oracle's and the agent's own best.
+- **Success:** the agent's kept plan reaches 90% of the best known drop (the Workflow++ near-best placeholder). Otherwise it tries again, up to 5 attempts, told what it kept, what is reachable and, from code, which regions still hold the most resistance after its plan and how each changed; a case still unsolved is flagged for review.
+- **Learning:** every attempt is kept in `experience.jsonl`; before each case the agent is shown the three most similar solved attempts and the two most similar ones that fell short (by each region's share of resistance and the side ratio), with their plans and results.
+- **Executors:** `smooth` (smooth walls on the expert labels, local Docker), `voxel` (the voxel airway, about 7 times faster, for trying the loop out) and `ssh` (the smooth case run on a remote machine with Docker; not yet run against a real machine). Results are appended as cases finish, so a stopped campaign resumes.
+- **Looking inside a case:** `python -m nasal.case_view C00-00008` (with `NASALSEG_ROOT` set to the NasalSeg folder) rebuilds the case and writes `data/figures/cases/C00-00008.png`. The image has coronal slices through the vestibule, valve, front and back turbinate and choana, plus the slice each pathology changed most, over the patient's CT. Each slice shows the healthy airway outlined, the air left after the pathologies, and the air each pathology removed in its own color, with the patient's right on the left of each slice. Results from `results.jsonl` go in the title.
+- **Status:** the generator, the runner and their tests are done. A pilot of 8 cases (voxel walls, local Qwen2.5-14B, 113 OpenFOAM runs) solved 4, 3 of them on the first attempt. The first 4 cases solved 1 (a single left turbinate hypertrophy: 8.9% lower against the oracle's 9.4%); after each failure the feedback and instructions changed: a diagnosis of where the resistance still sits, depth guidance, failed attempts in the library, every earlier attempt listed, no repeated plan, which operation acts on which region, and the oracle without septoplasty as a fairer reference. The next 4 solved 3: 2.6% against 2.2% (right turbinate hypertrophy with a mild septal deviation), 12.9% against 12.8% on the third attempt (10.4%, 11.2%, then 12.9%) and 10.1% against 2.5% (a mild left choanal narrowing, where the agent beat the oracle). All 4 unsolved cases had 2 or 3 pathologies including a severe one (best 8.4% against 14.1%, 18.9% against 31.0%, 51.2% against 68.1% and 10.4% against 26.3%). The next 20 cases (same voxel walls and model, the code before commit 40f3796, 237 OpenFOAM runs, about 24 hours) solved 12, 7 on the first attempt: 8 of 10 with one pathology, 4 of 9 with two, 0 of 1 with three; 5 of 6 whose worst pathology was 1 layer, 6 of 9 at 2 layers, 1 of 5 at 3 layers. The 8 unsolved cases reached 8% to 87% of the best known drop (three of them 85% to 87%). 5 of the 62 attempts failed outright (3 TypeError, an Ollama timeout, a tool error); a failed attempt now records where it failed. Across all 28 cases, 16 are solved. Commit 40f3796 changed the septoplasty and the surgeon's depth option, so later cases go in a new campaign folder and are compared separately.
 
 ## Surgical decision rules (Workflow++ prototype)
 
@@ -267,31 +503,33 @@ The evaluator is pluggable (`evaluator=`). It defaults to the uncalibrated formu
 
 ### Step 5: virtual surgery on real airways, verified in OpenFOAM
 
-`nasal.decision.patient` applies the procedures to a patient's voxel airway. Each procedure adds or moves one voxel layer (about 0.6 mm). These are modeling choices, not surgical prescriptions.
+`nasal.decision.patient` applies the procedures to a patient's voxel airway. In the fixed plans below each procedure acts by one voxel layer (about 0.6 mm sideways). These are modeling choices, not surgical prescriptions.
 
 - **Valve repair:** widens both valve regions (20–35% of each cavity's length) sideways and vertically.
 - **Turbinate reduction:** pushes both cavities' lateral wall outward in the turbinate region (35–85%).
-- **Septoplasty:** removes the wider cavity's medial layer and grows the narrower one toward it.
+- **Septoplasty:** a local correction. In every coronal row of the valve and turbinate regions, the septum is the tissue between the two cavities' medial edges, counted only where they are at most 8 mm apart and no more than 3 voxels thicker than the septum's median (where a cavity's medial air is gone, its edge jumps to a pocket further out, and that row does not measure the septum). A plane is fitted to the septum's midline by least absolute deviations and then Tukey's biweight, which gives rows more than 2 voxels (or 4.685 robust spreads) off the plane no weight, so a local bulge does not pull the plane toward it. Tested against the campaign's septal bulge (1 to 3 voxels over the middle quarter of the septum) on 4 patients, the bulged rows end up at least as straight as the original septum in 11 of 12 cases (P022 at 3 voxels: 0.65 against 0.48 voxels); on a curved septum few voxels return to their original place, because septoplasty straightens the septum rather than restoring its curve. Rows whose midline lies at least one voxel off that plane are moved back toward it, by up to the depth, never more than a quarter voxel past it. The septum keeps its thickness: the cavity it bulged into gains exactly the air the other cavity gives up, and that cavity keeps at least one voxel in the row. A straight septum is left unchanged. The earlier version removed the wider cavity's medial layer and could barely grow the other side, so it mostly removed airway; that was the cause of the septoplasty artifact.
 - **Limits:** growth never touches the other cavity or crosses the nostril or outlet cuts, and the airway is kept as one connected piece.
 
 Both rules are applied per patient:
 
 - **Standard rule:** turbinate reduction, plus septoplasty when one side's mean cross-section is over 1.3 times the other's (a placeholder threshold).
-- **Workflow++:** scores all 7 plans with the patient surrogate on the operated airway's measured geometry.
+- **Workflow++:** scores all 7 plans with the patient surrogate on the operated airway's measured geometry and picks the smallest plan near the best one. It recommends no surgery when even the best plan lowers resistance by less than the placeholder minimum benefit (5%). When scoring, no surgery counts as right when OpenFOAM's best plan is also under 5%.
 
 `nasal-patients surgery --labels nasalseg/labels --ids P022 --procs 4` then runs OpenFOAM on the untouched airway and on all 7 plans, and prints how each rule's choice compares.
 
-We ran the 12 most obstructed patients whose labels pass the position check. 2 pairs turned out to be duplicate scans in NasalSeg (P009/P010 and P080/P081 have identical geometry), so the results below cover 10 distinct airways, 8 OpenFOAM runs each:
+We ran the 12 most obstructed patients whose labels pass the position check. 2 pairs turned out to be duplicate scans in NasalSeg (P009/P010 and P080/P081 have identical geometry), so the results below cover 10 distinct airways, 8 OpenFOAM runs each (3000 iterations). **Being re-run:** the 4 plans with septoplasty were re-run after the septoplasty became a local correction, and the numbers below come from that version; the septoplasty has since been made more robust (the biweight plane and the row filter above, which change 0.5 to 1.7% of each airway), so those plans are being run again. The plans were rescored with the 5% minimum benefit, and each plan's airway added and removed is in the data (`added_mm3`, `removed_mm3`).
 
 | Plan chosen by | Mean OpenFOAM resistance drop | Within 90% of the best plan's drop |
 | --- | --- | --- |
-| Workflow++ (surrogate) | 10.2% | 10 of 10 (the best plan itself in 8) |
-| Standard rule | 7.2% | 1 of 10 |
-| Best plan per patient (OpenFOAM) | 10.2% | |
+| Workflow++ (surrogate) | 10.5% | 8 of 10 |
+| Fixed plan: turbinate reduction + valve repair for everyone | 10.5% | 8 of 10 |
+| Standard rule | 7.9% | 1 of 10 |
+| Best plan per patient (OpenFOAM) | 10.9% (up to 28.3%) | |
 
-- **Best plan:** turbinate reduction with valve repair was best or near-best for every patient (mean drop 10.2%, up to 26.7%). Turbinate reduction alone averaged 7.8% and valve repair alone 1.9%.
-- **Septoplasty raised resistance** in this model (mean −7.9% alone). The voxel version removes more airway than it adds, so this is an artifact of the model, not a finding about septoplasty. Workflow++ never chose it; the standard rule chose it for 2 patients.
-- **The surrogate ranks plans better than it sizes them:** its predicted drops correlate only 0.47 with OpenFOAM's, with a mean error of 6.1 percentage points. It still picked the right plan, because the plans' differences were large.
+- **The best plan now differs between patients:** all three procedures were best for 5 of the 10 (P009, P022, P039, P096, P114) and turbinate reduction with valve repair for the other 5. Adding septoplasty to that pair gained 0.3 to 1.6 points where it helped. By plan, the mean drops were 10.6% (all three), 10.5% (turbinate reduction + valve repair), 8.2% (turbinate reduction), 8.0% (turbinate reduction + septoplasty), 2.3% (septoplasty + valve repair), 1.9% (valve repair) and 0.2% (septoplasty alone).
+- **Workflow++ does not see that difference yet:** it chose turbinate reduction with valve repair for all 10 patients, so it ties the fixed-plan baseline (`compare_surgery` reports both). The septoplasty gains are smaller than the surrogate's error. It misses P009 and P114, where OpenFOAM's best plan lowers resistance by under 5% (0.5% and 2.6%), so no surgery would have counted as right, but the surrogate expected enough gain to operate. It beats the standard rule, which picks turbinate reduction alone or adds septoplasty from a placeholder asymmetry threshold. The surrogate was fitted on all 125 patients, these 10 included, so this is not a test on unseen patients.
+- **Septoplasty is now neutral on its own** (0.2% lower on average, from 2.6% higher to 5.5% lower): it moves about 300 mm³ of airway from one side to the other (median added 300 mm³, removed 301 mm³). The previous version removed airway and raised resistance by 8.3% on average, an artifact of the model.
+- **The surrogate sizes plans roughly:** its predicted drops correlate 0.38 with OpenFOAM's over the 70 plans, with a mean error of 4.5 percentage points.
 - **Limits:** this is a 10-patient sample of the most obstructed airways, with one-layer changes, steady flow and rigid walls. The rules' thresholds are unreviewed placeholders.
 
 ## Keeping docs in sync

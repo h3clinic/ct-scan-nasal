@@ -1,7 +1,7 @@
 [project]
 name = "ct-scan-nasal"
 version = "0.1.0"
-description = "Research prototype: parametric nasal airway cases, airflow resistance, and a small-model agent loop."
+description = "Patient-specific nasal airway modeling, OpenFOAM analysis, and verified virtual-surgery workflows."
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.26",
@@ -15,8 +15,9 @@ dev = ["pytest>=8.0"]
 sim = ["gmsh>=4.11"]
 surrogate = ["torch>=2.2"]
 agents = ["openai>=1.40"]
-patients = ["pynrrd>=1.0"]
-demo = ["gradio>=4", "plotly>=5", "scikit-image>=0.21", "pynrrd>=1.0", "openai>=1.40"]
+patients = ["pynrrd>=1.0", "matplotlib>=3.7"]
+segment = ["pynrrd>=1.0", "scikit-image>=0.21", "scikit-learn>=1.3", "pydicom>=2.4", "nibabel>=5.1"]
+studio = ["gradio>=4", "plotly>=5", "scikit-image>=0.21", "pynrrd>=1.0", "openai>=1.40", "keyring>=24", "pydicom>=2.4", "nibabel>=5.1"]
 
 [project.scripts]
 nasal-generate = "nasal.cli:main"
@@ -24,7 +25,11 @@ nasal-simulate = "nasal.cli:simulate_main"
 nasal-surrogate = "nasal.cli:surrogate_main"
 nasal-agents = "nasal.cli:agents_main"
 nasal-patients = "nasal.cli:patients_main"
-nasal-demo = "nasal.demo:main"
+nasal-studio = "nasal.studio:main"
+nasal-distill = "nasal.distill:main"
+nasal-campaign = "nasal.campaign:main"
+nasal-segment = "nasal.cli:segment_main"
+nasal-setup = "nasal.setup_check:main"
 
 [build-system]
 requires = ["setuptools>=68"]

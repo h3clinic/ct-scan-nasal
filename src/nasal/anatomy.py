@@ -40,11 +40,28 @@ REGION_FRACTIONS = (0.2, 0.35, 0.85)
 INLETS = {"left": "inlet_left", "right": "inlet_right"}
 
 
-def load_labels(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Label volume, voxel spacing (mm) and origin (mm, LPS) from a NasalSeg .nrrd file."""
+def load_labels(path: Path, like: Path | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Label volume, voxel spacing (mm) and origin (mm, LPS) from a NasalSeg .nrrd file.
+
+    With `like` (the scan's CT image), a label header that disagrees with the image only in
+    the sign of an axis is replaced by the image's: 9 NasalSeg label files (P025, P042, P074,
+    P089, P100, P101, P108, P118, P129) claim a reversed vertical axis with an origin outside
+    the scan, while their voxels are stored in the image's order (flipped, only about 40% of
+    the airway label lies on air; as stored, over 88%). Without `like`, a label file in
+    NasalSeg's layout (labels/P001_seg.nrrd) uses images/P001_img.nrrd when that file exists."""
     import nrrd
 
+    path = Path(path)
+    if like is None and path.name.endswith("_seg.nrrd"):
+        sibling = path.parent.parent / "images" / path.name.replace("_seg.nrrd", "_img.nrrd")
+        like = sibling if sibling.exists() else None
     data, header = nrrd.read(str(path))
+    if like is not None:
+        ref = nrrd.read_header(str(like))
+        mine = np.diag(np.asarray(header["space directions"], dtype=float))
+        theirs = np.diag(np.asarray(ref["space directions"], dtype=float))
+        if data.shape == tuple(ref["sizes"]) and np.allclose(np.abs(mine), np.abs(theirs)) and not np.allclose(mine, theirs):
+            header = {**header, "space directions": ref["space directions"], "space origin": ref["space origin"]}
     directions = np.asarray(header["space directions"], dtype=float)
     if not np.allclose(directions, np.diag(np.diag(directions))) or header.get("space") != "left-posterior-superior":
         raise ValueError(f"{path}: expected axis-aligned LPS directions")
@@ -260,14 +277,20 @@ def write_patient_case(case_dir: Path, label_path: Path, processes: int = 4, tur
 
 
 def write_airway_case(case_dir: Path, tags: np.ndarray, spacing: np.ndarray, origin: np.ndarray, cuts: dict,
-                      processes: int = 4, turbulence: str = "kOmegaSST") -> dict:
+                      processes: int = 4, turbulence: str = "kOmegaSST", max_iterations: int = MAX_ITERATIONS,
+                      live_every: int | None = None) -> dict:
     """Write a complete OpenFOAM case for an airway tag volume (for example after
-    virtual surgery); returns its geometry record."""
+    virtual surgery); returns its geometry record. With `live_every`, the case also samples wall pressure and
+    plane speeds every that many iterations for the live view (`nasal.live`)."""
+    from .live import sampling
+
     mesh = voxel_mesh(tags, spacing, origin, cuts)
+    extra = sampling(tags, spacing, origin, live_every) if live_every else ""
     if case_dir.exists():
         shutil.rmtree(case_dir)
-    for rel, text in case_files(processes, turbulence, inlets=tuple(INLETS.values()), sample_planes=False,
-                                mesh_commands=[], write_format="ascii", reconstruct=processes > 1).items():
+    for rel, text in case_files(processes, turbulence, max_iterations, inlets=tuple(INLETS.values()), sample_planes=False,
+                                mesh_commands=[], write_format="ascii", reconstruct=processes > 1,
+                                extra_functions=extra).items():
         path = case_dir / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8", newline="\n")

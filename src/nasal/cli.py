@@ -249,17 +249,24 @@ def agents_main(argv: list[str] | None = None) -> None:
     parser.add_argument("request", nargs="?", default="", help='e.g. "narrow nasal valve, septum bent to the left; what if the valve is widened?"')
     parser.add_argument("--surrogate", type=Path, default=agents.SURROGATE_PATH)
     parser.add_argument("--log", type=Path, default=Path("data/agent_log.json"))
-    parser.add_argument("--thinking", action="store_true", help="turn on the model's reasoning mode")
+    parser.add_argument("--model", default=None, help=f"OpenAI model (default {agents.OPENAI_MODEL}); needs OPENAI_API_KEY")
+    parser.add_argument("--labels", type=Path, default=None,
+                        help="NasalSeg labels folder; with --live, patients without stored OpenFOAM runs are simulated")
+    parser.add_argument("--live", action="store_true",
+                        help="run OpenFOAM (Docker) for patient airways and surgery plans without stored runs")
     parser.add_argument("--eval", action="store_true",
                         help="ignore REQUEST and run the fixed reliability probes; writes data/agent_eval.json")
     args = parser.parse_args(argv)
 
+    from .patient_flow import PatientFlow
+
+    patients = agents.load_patient_table()
+    flow = PatientFlow(patients, agents.load_surgery(), args.labels, live=args.live) if patients is not None else None
     if args.eval:
         from . import agent_eval
 
-        patients, patient_surrogate = agents.load_patients()
-        result = agent_eval.run(surrogate=agents.load_surrogate(args.surrogate), thinking=args.thinking,
-                                patients=patients, patient_surrogate=patient_surrogate)
+        result = agent_eval.run(surrogate=agents.load_surrogate(args.surrogate), model=args.model,
+                                patients=patients, patient_flow=flow)
         out = args.log.with_name("agent_eval.json")
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
@@ -267,13 +274,125 @@ def agents_main(argv: list[str] | None = None) -> None:
         print(f"details: {out}")
         return
 
-    patients, patient_surrogate = agents.load_patients()
-    out = agents.run_pipeline(args.request, surrogate=agents.load_surrogate(args.surrogate), thinking=args.thinking,
-                              patients=patients, patient_surrogate=patient_surrogate)
+    out = agents.run_pipeline(args.request, surrogate=agents.load_surrogate(args.surrogate), model=args.model,
+                              patients=patients, patient_flow=flow)
     args.log.parent.mkdir(parents=True, exist_ok=True)
     args.log.write_text(json.dumps(out, indent=2), encoding="utf-8")
     print(out["summary"])
     print(f"\n[{out['summary_source']}; {out['seconds']} s; log: {args.log}]")
+
+
+def _ct_pairs(images: Path, labels: Path | None, ids: list[str] | None) -> list[tuple[str, Path, Path | None]]:
+    """(patient id, CT file, expert label file or None) for every NasalSeg image."""
+    pairs = []
+    for img in sorted(images.glob("*_img.nrrd")):
+        pid = img.name.split("_")[0]
+        if ids and pid not in ids:
+            continue
+        lab = labels / f"{pid}_seg.nrrd" if labels else None
+        pairs.append((pid, img, lab if lab is not None and lab.exists() else None))
+    return pairs
+
+
+def segment_main(argv: list[str] | None = None) -> None:
+    """CT to airway: evaluate the segmentation front end, train it, or run it on one scan."""
+    import json
+    import time
+
+    import numpy as np
+
+    from . import segment as sg
+    from .anatomy import LABELS
+
+    parser = argparse.ArgumentParser(description="Segment the nasal airway from raw CT (no expert labels).")
+    sub = parser.add_subparsers(dest="command", required=True)
+    e = sub.add_parser("eval", help="patient-grouped cross-validation against NasalSeg expert labels")
+    t = sub.add_parser("train", help="train on every labelled scan and save the model")
+    r = sub.add_parser("run", help="segment one CT scan into NasalSeg-style labels")
+    h = sub.add_parser("holdout", help="train without --ids, segment those scans and write their label files "
+                                       "(then run nasal-patients simulate on the output folder)")
+    h.add_argument("--images", type=Path, required=True)
+    h.add_argument("--labels", type=Path, required=True)
+    h.add_argument("--ids", nargs="+", required=True, help="held-out patients to segment")
+    h.add_argument("--threshold", type=float, default=sg.AIR_THRESHOLD_HU)
+    h.add_argument("--out", type=Path, default=Path("data/segment_auto"), help="folder for <id>_seg.nrrd files")
+    for p in (e, t):
+        p.add_argument("--images", type=Path, required=True, help="NasalSeg images folder (*_img.nrrd)")
+        p.add_argument("--labels", type=Path, required=True, help="NasalSeg labels folder (*_seg.nrrd)")
+        p.add_argument("--ids", nargs="*", help="patient ids (default: all)")
+    e.add_argument("--thresholds", type=float, nargs="+", default=[sg.AIR_THRESHOLD_HU],
+                   help="air thresholds (HU) to sweep")
+    e.add_argument("--surrogate", type=Path, default=Path("data/patient_surrogate.json"))
+    e.add_argument("--out", type=Path, default=Path("data/segment_eval.csv"))
+    t.add_argument("--threshold", type=float, default=sg.AIR_THRESHOLD_HU)
+    t.add_argument("--out", type=Path, default=sg.MODEL_PATH)
+    r.add_argument("--ct", type=Path, nargs="+", required=True,
+                   help="CT scan: a DICOM folder, .zip or slice files, NIfTI (.nii/.nii.gz) or NRRD; full-head scans "
+                        "are cropped to the nose (nasal.ct_import)")
+    r.add_argument("--model", type=Path, default=sg.MODEL_PATH)
+    r.add_argument("--threshold", type=float, default=sg.AIR_THRESHOLD_HU)
+    r.add_argument("--out", type=Path, required=True, help="output label file (.nrrd)")
+    args = parser.parse_args(argv)
+
+    if args.command == "run":
+        import joblib
+
+        from . import ct_import
+
+        ct, spacing, origin, report = ct_import.prepare(args.ct)
+        print(f"read {report['format']}: {report['slices']} slices" + (f", cropped to {report['size_mm']} mm around the nose"
+                                                                        if report.get("cropped") else ""))
+        labels = sg.segment(ct, spacing, joblib.load(args.model), args.threshold)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        sg.write_labels(args.out, labels, spacing, origin)
+        print(f"{args.out}: " + ", ".join(f"{n} {int((labels == v).sum())} voxels" for n, v in LABELS.items()))
+        return
+
+    if args.command == "holdout":
+        held = {sg.DUPLICATE_SCANS.get(p, p) for p in args.ids}  # a duplicate scan is held out with its twin
+        train_pairs = [p for p in _ct_pairs(args.images, args.labels, None)
+                       if p[2] is not None and sg.DUPLICATE_SCANS.get(p[0], p[0]) not in held]
+        train_cases = [sg.prepare(img, lab, args.threshold) for _, img, lab in train_pairs]
+        model = sg.train([c["features"] for c in train_cases], [c["targets"] for c in train_cases])
+        args.out.mkdir(parents=True, exist_ok=True)
+        for pid, img, _ in _ct_pairs(args.images, None, args.ids):
+            ct, spacing, origin = sg.load_ct(img)
+            labels = sg.segment(ct, spacing, model, args.threshold)
+            sg.write_labels(args.out / f"{pid}_seg.nrrd", labels, spacing, origin)
+            print(f"{pid}: " + ", ".join(f"{n} {int((labels == v).sum())}" for n, v in LABELS.items()), flush=True)
+        print(f"trained on {len(train_cases)} scans; labels in {args.out}")
+        return
+
+    pairs = [p for p in _ct_pairs(args.images, args.labels, args.ids) if p[2] is not None]
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    if args.command == "train":
+        import joblib
+
+        cases = [sg.prepare(img, lab, args.threshold) for _, img, lab in pairs]
+        model = sg.train([c["features"] for c in cases], [c["targets"] for c in cases])
+        joblib.dump(model, args.out, compress=3)
+        print(f"trained on {len(cases)} scans -> {args.out}")
+        return
+
+    surrogate = None
+    if args.surrogate.exists():
+        from .surrogate import PatientSurrogate
+        surrogate = PatientSurrogate.load(args.surrogate)
+    rows = []
+    for thr in args.thresholds:
+        start = time.time()
+        cases = {pid: sg.prepare(img, lab, thr) for pid, img, lab in pairs}
+        rows += [{"threshold_hu": thr, **row} for row in sg.cross_validate(cases, surrogate=surrogate)]
+        d = np.array([r["dice_airway"] for r in rows if r["threshold_hu"] == thr])
+        print(f"{thr:g} HU: airway Dice mean {d.mean():.3f}, median {np.median(d):.3f}, "
+              f"worst {d.min():.3f} ({len(d)} scans, {time.time() - start:.0f} s)", flush=True)
+    table = pd.DataFrame(rows)
+    table.to_csv(args.out, index=False)
+    summary = {f"{thr:g}": {f"{c}_{stat}": round(float(getattr(g[c], stat)()), 3)
+                            for c in g.columns if c.startswith("dice_") for stat in ("mean", "median", "min")}
+               for thr, g in table.groupby("threshold_hu")}
+    args.out.with_suffix(".json").write_text(json.dumps(summary, indent=1))
+    print(f"wrote {args.out} and {args.out.with_suffix('.json')}")
 
 
 if __name__ == "__main__":

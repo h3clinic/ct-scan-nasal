@@ -39,13 +39,13 @@ def _no_patient(case: dict) -> bool:
 
 PROBES = [
     Probe("Patient P022: which side is harder to breathe through?", _patient("P022")),
-    Probe("Look at patient p039. What if the left side's narrowest section were 30% wider?", _patient("P039"), True),
-    Probe("Show me NasalSeg patient 96 and widen the right narrowest section by 20%.", _patient("P096"), True),
+    Probe("Look at patient p039. What if the turbinates were reduced?", _patient("P039"), True),
+    Probe("Show me NasalSeg patient 96 and what a valve repair would do.", _patient("P096"), True),
     Probe("How obstructed is patient P064?", _patient("P064")),
-    Probe("Patient P123, and what if its narrower side were widened by 40%?", _patient("P123"), True),
+    Probe("Patient P123, and what if it had turbinate reduction and valve repair?", _patient("P123"), True),
     Probe("Explain the airflow of patient P001.", _patient("P001")),
     Probe("Patient P999: how does it look?", _no_patient),
-    Probe("Patient P022 but make the valve narrower by 20% on the left.", _patient("P022"), True),
+    Probe("Patient P022 but what would a septoplasty do?", _patient("P022"), True),
     Probe("A normal, healthy nose.", _params(lambda c: abs(c["septum_deviation"]) < 0.2 and 12 <= c["valve_angle_deg"] <= 18)),
     Probe("Narrow nasal valve, about 9 degrees, everything else normal.", _params(lambda c: c["valve_angle_deg"] <= 11)),
     Probe("Septum strongly deviated to the right.", _params(lambda c: c["septum_deviation"] < -0.3)),
@@ -103,7 +103,8 @@ def run(probes=PROBES, **pipeline_kwargs) -> dict:
         "explainer_template_fallback": sum(r["explainer"] == "template fallback" for r in rows),
         "median_seconds": sorted(r["seconds"] for r in rows)[n // 2],
     }
-    return {"model": agents.MODEL_INFO, "summary": summary, "runs": rows}
+    return {"model": agents.model_info(pipeline_kwargs.get("model") or agents.OPENAI_MODEL), "summary": summary,
+            "runs": rows}
 
 
 def main_report(result: dict) -> str:

@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .params import PARAM_SPECS, REGIONS, SIDES, CaseParams
+from .params import DUPLICATE_SCANS, PARAM_SPECS, REGIONS, SIDES, CaseParams
 from .resistance import REFERENCE_PRESSURE, evaluate
 
 FEATURES = ("valve_angle_deg", "turbinate_scale", "deviation_toward")
@@ -279,15 +279,25 @@ class PatientSurrogate:
         return cls(**data)
 
 
+def patient_folds(table: pd.DataFrame, folds: int = 5, seed: int = 0) -> np.ndarray:
+    """Fold of each row, grouped by patient: duplicate scans (params.DUPLICATE_SCANS) share a fold."""
+    group = table["patient"].map(lambda p: DUPLICATE_SCANS.get(p, p)).to_numpy()
+    names = sorted(set(group))
+    order = np.random.default_rng(seed).permutation(len(names))
+    fold_of = {names[j]: i % folds for i, j in enumerate(order)}
+    return np.array([fold_of[g] for g in group])
+
+
 def patient_report(table: pd.DataFrame, folds: int = 5, seed: int = 0) -> dict:
     """Cross-validated error of the patient surrogate, next to predicting the
-    training-fold average (geometric mean) for every patient."""
+    training-fold average (geometric mean) for every patient. Folds are grouped by patient, so duplicate scans
+    (params.DUPLICATE_SCANS) are always held out together."""
     table = table.reset_index(drop=True)
-    order = np.random.default_rng(seed).permutation(len(table))
+    fold = patient_folds(table, folds, seed)
     preds, means = {}, {}
     for k in range(folds):
-        test = order[k::folds]
-        train = table.iloc[np.setdiff1d(order, test)]
+        test = np.flatnonzero(fold == k)
+        train = table.iloc[np.flatnonzero(fold != k)]
         model = PatientSurrogate.fit(train)
         avg = {c: float(np.exp(np.log(train[c]).mean())) for c in train.columns if c.endswith("_resistance")}
         for i in test:
